@@ -6,6 +6,7 @@ import { commitmentFromRow, COMMITMENT_COLUMNS } from "../../src/mind/rows";
 import { CommitmentLogEmitter, CommitmentScheduler, startSchedulingLoop, type TerminalEvent, type TerminalSink } from "../../src/scheduling";
 import { clearTestDatabase, createTestPool, prepareTestDatabase } from "../helpers/database";
 import { otherUserId, seedCommitment, seedUser, userId } from "../helpers/factories";
+import { NotificationFeed } from "../../src/notifications/feed";
 
 let pool: pg.Pool;
 let scheduler: CommitmentScheduler;
@@ -242,6 +243,30 @@ describe("ordered terminal emission", () => {
     expect(await emitter.flush()).toEqual({ emitted: 1, remaining: 0 });
     expect(seen).toEqual([uuidSchema.parse(rows[0]?.id), uuidSchema.parse(rows[0]?.id)]);
     expect(await readLogs()).toHaveLength(1);
+  });
+
+  test("emission creates one replayable user-scoped event and deletion cancels pending logs",async()=>{
+    await seedUser(pool);await seedUser(pool,otherUserId);
+    const due=new Date((await databaseTime()).getTime()-60_000);
+    const first=await createCommitment({dueAt:due});
+    const second=await createCommitment({dueAt:due});
+    await scheduler.tick();
+    await writer.deleteCommitment({userId},second.id,{expectedVersion:second.version});
+    const emitted:TerminalEvent[]=[];
+    expect(await new CommitmentLogEmitter(pool,{emit:async event=>{emitted.push(event);}}).flush()).toEqual({emitted:1,remaining:0});
+    expect(emitted).toHaveLength(1);
+    const feed=new NotificationFeed(pool);
+    const items=await feed.after({userId},"0");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({commitmentId:first.id,title:first.title,active:true});
+    expect(await feed.after({userId},items[0]!.id)).toEqual([]);
+    expect(await feed.after({userId:otherUserId},"0")).toEqual([]);
+    const logs=await readLogs();
+    expect(logs.find(row=>row.commitment_id===second.id)?.emitted_at).toBeNull();
+    expect((await pool.query("SELECT canceled_at FROM commitment_logs WHERE commitment_id=$1",[second.id])).rows[0]?.canceled_at).not.toBeNull();
+    const completed=await writer.editCommitment({userId},first.id,{expectedVersion:first.version,status:"completed"});
+    expect(completed.status).toBe("completed");
+    expect((await feed.after({userId},"0"))[0]?.active).toBe(false);
   });
 
   test("repeated sink failures back off at five through sixty seconds", async () => {

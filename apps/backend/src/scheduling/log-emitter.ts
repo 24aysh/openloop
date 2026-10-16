@@ -54,19 +54,29 @@ function terminalEvent(row: LogRow, at: Date): TerminalEvent {
   };
 }
 
-async function updateAfterAttempt(client: pg.PoolClient, row: LogRow, success: boolean): Promise<void> {
+async function emitOne(client: pg.PoolClient, row: LogRow, sink:TerminalSink, at:Date): Promise<"emitted"|"failed"|"canceled"> {
   await client.query("BEGIN");
   try {
     await client.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
     await lockMindState(client, uuidSchema.parse(row.user_id));
-    const current = await client.query<{ emitted_at: Date | null; emit_attempts: number }>(
-      "SELECT emitted_at,emit_attempts FROM commitment_logs WHERE user_id=$1 AND id=$2 FOR UPDATE",
+    const current = await client.query<{ emitted_at: Date | null; canceled_at: Date | null; emit_attempts: number; status:string; current_schedule_version:string }>(
+      `SELECT l.emitted_at,l.canceled_at,l.emit_attempts,c.status,c.schedule_version AS current_schedule_version
+        FROM commitment_logs l JOIN commitments c ON c.user_id=l.user_id AND c.id=l.commitment_id
+        WHERE l.user_id=$1 AND l.id=$2 FOR UPDATE OF l,c`,
       [row.user_id, row.id],
     );
     const found = current.rows[0];
-    if (!found || found.emitted_at !== null) throw new Error("Commitment log changed during emission");
+    if (!found || found.emitted_at !== null || found.canceled_at !== null) {await client.query("COMMIT");return "canceled";}
+    if(found.status!=="open" || found.current_schedule_version!==row.schedule_version){
+      await client.query("UPDATE commitment_logs SET canceled_at=clock_timestamp() WHERE user_id=$1 AND id=$2",[row.user_id,row.id]);
+      await client.query("COMMIT");return "canceled";
+    }
+    let success=false;
+    try{await sink.emit(terminalEvent(row,at));success=true;}
+    catch{/* the durable row records this attempt without private exception text */}
     if (success) {
       await client.query("UPDATE commitment_logs SET emitted_at=clock_timestamp(),last_error_code=NULL WHERE user_id=$1 AND id=$2", [row.user_id, row.id]);
+      await client.query("INSERT INTO notification_events(user_id,commitment_log_id) VALUES($1,$2) ON CONFLICT (commitment_log_id) DO NOTHING",[row.user_id,row.id]);
     } else {
       const attempts = found.emit_attempts + 1;
       const delay = Math.min(60, 5 * 2 ** Math.min(attempts - 1, 4));
@@ -75,6 +85,7 @@ async function updateAfterAttempt(client: pg.PoolClient, row: LogRow, success: b
       [row.user_id, row.id, attempts, delay]);
     }
     await client.query("COMMIT");
+    return success?"emitted":"failed";
   } catch (error) {
     try { await client.query("ROLLBACK"); } catch { /* preserve the original failure */ }
     throw error;
@@ -96,7 +107,7 @@ export class CommitmentLogEmitter {
       if (acquired) {
         while (true) {
           const pending = await client.query<LogRow>(`SELECT id,user_id,commitment_id,commitment_version,schedule_version,priority,due_at,eligible_at,
-            emit_available_at,batch_id,batch_position FROM commitment_logs WHERE emitted_at IS NULL
+            emit_available_at,batch_id,batch_position FROM commitment_logs WHERE emitted_at IS NULL AND canceled_at IS NULL
             ORDER BY eligible_at,batch_id,batch_position,id LIMIT 1`);
           const row = pending.rows[0];
           if (!row) break;
@@ -104,15 +115,12 @@ export class CommitmentLogEmitter {
           const attemptedAt = clock.rows[0]?.attempted_at;
           if (!(attemptedAt instanceof Date)) throw new Error("Database clock unavailable");
           if (row.emit_available_at > attemptedAt) break;
-          let success = false;
-          try { await this.sink.emit(terminalEvent(row, attemptedAt)); success = true; }
-          catch { /* the durable row records this attempt without private exception text */ }
-          await updateAfterAttempt(client, row, success);
-          if (!success) break;
-          emitted++;
+          const outcome=await emitOne(client,row,this.sink,attemptedAt);
+          if(outcome==="failed")break;
+          if(outcome==="emitted")emitted++;
         }
       }
-      const count = await client.query<{ remaining: string }>("SELECT count(*)::text AS remaining FROM commitment_logs WHERE emitted_at IS NULL");
+      const count = await client.query<{ remaining: string }>("SELECT count(*)::text AS remaining FROM commitment_logs WHERE emitted_at IS NULL AND canceled_at IS NULL");
       outcome = { emitted, remaining: Number(count.rows[0]?.remaining ?? "0") };
     } catch (error) {
       operationError = error;
