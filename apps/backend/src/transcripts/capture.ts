@@ -44,7 +44,7 @@ export async function finishCapture(pool:pg.Pool,scope:UserScope,sessionId:UUID,
     if(terminal==="incomplete") await excludeSuffix(client,session);
     const epoch=nextCounter(counterSchema.parse(session.capture_epoch));
     await client.query(`UPDATE voice_sessions SET state=$3,capture_epoch=$4,closed_at=now(),updated_at=now(),
-      close_reason=$5,error_code=$6 WHERE user_id=$1 AND id=$2`,
+      close_reason=$5,error_code=CASE WHEN $3='closed' THEN error_code ELSE $6 END WHERE user_id=$1 AND id=$2`,
     [session.user_id,session.id,terminal,epoch,terminal==="closed"?"clean":closeReason,terminal==="closed"?null:closeReason]);
     return {state:terminal,sealedThrough:session.sealed_through,reason:terminal==="closed"?"clean":closeReason};
   });

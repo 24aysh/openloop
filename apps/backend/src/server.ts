@@ -5,6 +5,8 @@ import { withTransaction } from "./db/transaction";
 import { MindReader, MindWriter } from "./mind";
 import { createMindRouter } from "./http/mind-routes";
 import { errorResponse } from "./http/error-response";
+import { OpenAIRealtimeGateway, REALTIME_INSTRUCTIONS, SessionController, SessionRepository, createSessionRouter, startSessionSupervisor } from "./sessions";
+import { startTranscriptScanLoop, TranscriptIngestor } from "./transcripts";
 
 const config=readConfig();
 const pool=createPool(config.DATABASE_URL);
@@ -15,13 +17,31 @@ await withTransaction(pool,{isolation:"read committed"},async client=>{
 });
 
 const app=express();
-app.use(express.json({limit:"32kb",strict:true}));
 const scope={userId:config.DEMO_USER_ID};
+const ingestor=new TranscriptIngestor(pool,{model:config.RECONCILIATION_MODEL,promptVersion:config.RECONCILIATION_PROMPT_VERSION,schemaVersion:config.RECONCILIATION_SCHEMA_VERSION});
+const sessions=new SessionController(new SessionRepository(pool),new OpenAIRealtimeGateway(config.OPENAI_API_KEY),ingestor,
+  {model:config.OPENAI_REALTIME_MODEL,transcriptionModel:config.OPENAI_TRANSCRIPTION_MODEL,voice:config.OPENAI_REALTIME_VOICE,instructions:REALTIME_INSTRUCTIONS});
+await sessions.recoverAtStartup();
+let shuttingDown=false;let backgroundHealthy=true;
+app.use(createSessionRouter(sessions,()=>scope));
+app.use(express.json({limit:"32kb",strict:true}));
 app.use(createMindRouter(new MindReader(pool),new MindWriter(pool),()=>scope));
-app.use(errorResponse);
 app.get("/health/live",(_request,response)=>response.json({ok:true}));
-app.get("/health/ready",async(_request,response)=>{try{await checkDatabase(pool);response.json({ok:true});}catch{response.status(503).json({ok:false});}});
+app.get("/health/ready",async(_request,response)=>{try{if(!backgroundHealthy || shuttingDown)throw new Error("not_ready");await checkDatabase(pool);response.json({ok:true});}catch{response.status(503).json({ok:false});}});
+app.use(errorResponse);
 const server=app.listen(config.PORT,"127.0.0.1");
-const shutdown=async()=>{server.close();await pool.end();};
+const backgroundError=()=>{backgroundHealthy=false;process.exitCode=1;void shutdown();};
+const transcriptScan=startTranscriptScanLoop(ingestor,backgroundError);
+const sessionSupervisor=startSessionSupervisor(sessions,backgroundError);
+async function shutdown():Promise<void> {
+  if(shuttingDown) return;shuttingDown=true;
+  await new Promise<void>(resolve=>{
+    const force=setTimeout(()=>{server.closeAllConnections();resolve();},5000);
+    server.close(()=>{clearTimeout(force);resolve();});
+  });
+  await Promise.allSettled([sessionSupervisor.stop(),transcriptScan.stop()]);
+  await sessions.shutdown();
+  await pool.end();
+}
 process.once("SIGINT",()=>{void shutdown();});
 process.once("SIGTERM",()=>{void shutdown();});
