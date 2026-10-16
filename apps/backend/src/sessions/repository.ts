@@ -111,15 +111,19 @@ export class SessionRepository {
   }
 
   async status(scope:UserScope,sessionId:UUID,captureReady:boolean):Promise<SessionStatus> {
-    const result=await this.pool.query<{id:string;state:string;ordered_through:number;sealed_through:number;applied_through:number;close_reason:string|null;error_code:string|null;backlog:number}>(`
+    const result=await this.pool.query<{id:string;state:string;ordered_through:number;sealed_through:number;applied_through:number;close_reason:string|null;error_code:string|null;backlog:number;blocked:number;transcript_gap_count:number}>(`
       SELECT s.id,s.state,s.ordered_through,s.sealed_through,s.applied_through,s.close_reason,s.error_code,
-        count(j.id) FILTER (WHERE j.state IN ('pending','running','retry_wait','blocked'))::integer AS backlog
+        count(j.id) FILTER (WHERE j.state IN ('pending','running','retry_wait','blocked'))::integer AS backlog,
+        count(j.id) FILTER (WHERE j.state='blocked')::integer AS blocked,
+        (SELECT count(*)::integer FROM transcript_items i WHERE i.user_id=s.user_id AND i.session_id=s.id
+          AND (i.ordinal IS NULL OR (i.role IN ('user','unknown') AND i.state<>'complete'))) AS transcript_gap_count
       FROM voice_sessions s LEFT JOIN reconciliation_jobs j ON j.user_id=s.user_id AND j.session_id=s.id
       WHERE s.user_id=$1 AND s.id=$2 GROUP BY s.id`,[scope.userId,sessionId]);
     const row=result.rows[0];
     if(!row) throw new DomainError("not_found","Session not found");
     return sessionStatusSchema.parse({sessionId:row.id,state:row.state,captureReady,orderedThrough:row.ordered_through,sealedThrough:row.sealed_through,
-      appliedThrough:row.applied_through,reconciliationBacklog:row.backlog,closeReason:row.close_reason,errorCode:row.error_code});
+      appliedThrough:row.applied_through,reconciliationBacklog:row.backlog,blockedReconciliationJobs:row.blocked,
+      transcriptGapCount:row.transcript_gap_count,closeReason:row.close_reason,errorCode:row.error_code});
   }
 
   async listOpen():Promise<readonly SessionStateRecord[]> {

@@ -4,9 +4,11 @@ import { DomainError, startSessionRequestSchema, uuidSchema, type SessionControl
 const noQuery=(request:Request)=>{if(Object.keys(request.query).length>0) throw new DomainError("invalid_input","Unknown query parameter");};
 const sessionId=(request:Request)=>uuidSchema.parse(request.params.sessionId);
 
-export function createSessionRouter(controller:SessionControllerContract,scopeForRequest:(_request:Request)=>UserScope):Router {
+export function createSessionRouter(controller:SessionControllerContract,scopeForRequest:(_request:Request)=>UserScope,
+  acceptingStarts:()=>boolean=()=>true):Router {
   const router=Router();
   router.post("/api/sessions",express.json({limit:"70kb",strict:true}),async(request,response)=>{
+    if(!acceptingStarts()){response.status(503).json({error:{code:"service_unavailable",message:"Backend is shutting down"}});return;}
     noQuery(request);const result=await controller.start(scopeForRequest(request),startSessionRequestSchema.parse(request.body));
     response.status(result.replayed?200:201).json(result.response);
   });

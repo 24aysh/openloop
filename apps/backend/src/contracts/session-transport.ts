@@ -9,7 +9,9 @@ export type StartSessionRequest=z.infer<typeof startSessionRequestSchema>;
 export const startSessionResponseSchema=z.strictObject({sessionId:uuidSchema,sdpAnswer:sdpSchema,state:z.literal("connecting")});
 export type StartSessionResponse=z.infer<typeof startSessionResponseSchema>;
 export const sessionStatusSchema=z.strictObject({sessionId:uuidSchema,state:voiceSessionStateSchema,captureReady:z.boolean(),orderedThrough:z.number().int().min(0),
-  sealedThrough:z.number().int().min(0),appliedThrough:z.number().int().min(0),reconciliationBacklog:z.number().int().min(0),closeReason:z.string().nullable(),errorCode:z.string().nullable()});
+  sealedThrough:z.number().int().min(0),appliedThrough:z.number().int().min(0),reconciliationBacklog:z.number().int().min(0),
+  blockedReconciliationJobs:z.number().int().min(0),transcriptGapCount:z.number().int().min(0),
+  closeReason:z.string().nullable(),errorCode:z.string().nullable()});
 export type SessionStatus=z.infer<typeof sessionStatusSchema>;
 
 export type RealtimeSettings=Readonly<{model:string;transcriptionModel:string;voice:string;instructions:string}>;

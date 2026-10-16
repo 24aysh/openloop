@@ -25,27 +25,37 @@ const sessions=new SessionController(new SessionRepository(pool),new OpenAIRealt
   {model:config.OPENAI_REALTIME_MODEL,transcriptionModel:config.OPENAI_TRANSCRIPTION_MODEL,voice:config.OPENAI_REALTIME_VOICE,instructions:REALTIME_INSTRUCTIONS});
 await sessions.recoverAtStartup();
 let shuttingDown=false;let backgroundHealthy=true;
-app.use(createSessionRouter(sessions,()=>scope));
+app.use(createSessionRouter(sessions,()=>scope,()=>!shuttingDown));
 app.use(express.json({limit:"32kb",strict:true}));
 app.use(createMindRouter(new MindReader(pool),new MindWriter(pool),()=>scope));
 app.get("/health/live",(_request,response)=>response.json({ok:true}));
 app.get("/health/ready",async(_request,response)=>{try{if(!backgroundHealthy || shuttingDown)throw new Error("not_ready");await checkDatabase(pool);response.json({ok:true});}catch{response.status(503).json({ok:false});}});
 app.use(errorResponse);
 const server=app.listen(config.PORT,"127.0.0.1");
-const backgroundError=()=>{backgroundHealthy=false;process.exitCode=1;void shutdown();};
+const backgroundError=()=>{backgroundHealthy=false;process.exitCode=1;void shutdown().catch(()=>{process.exitCode=1;});};
 const transcriptScan=startTranscriptScanLoop(ingestor,backgroundError);
 const sessionSupervisor=startSessionSupervisor(sessions,backgroundError);
 const reconciliationScan=startReconciliationLoop(new ReconciliationWorker(new ReconciliationRepository(pool),new OpenAITextExtractor(config.OPENAI_API_KEY),new MindWriter(pool)),backgroundError);
 const schedulingScan=startSchedulingLoop(new CommitmentScheduler(pool),new CommitmentLogEmitter(pool,new StdoutTerminalSink()),backgroundError);
-async function shutdown():Promise<void> {
-  if(shuttingDown) return;shuttingDown=true;
-  await new Promise<void>(resolve=>{
-    const force=setTimeout(()=>{server.closeAllConnections();resolve();},5000);
-    server.close(()=>{clearTimeout(force);resolve();});
-  });
-  await Promise.allSettled([sessionSupervisor.stop(),transcriptScan.stop(),reconciliationScan.stop(),schedulingScan.stop()]);
-  await sessions.shutdown();
-  await pool.end();
+let shutdownWork:Promise<void>|null=null;
+function shutdown():Promise<void> {
+  if(shutdownWork!==null)return shutdownWork;
+  shuttingDown=true;
+  shutdownWork=(async()=>{
+    const loops=Promise.allSettled([sessionSupervisor.stop(),transcriptScan.stop(),reconciliationScan.stop(),schedulingScan.stop()]);
+    try{await sessions.drainForShutdown();}
+    finally{
+      const sessionCleanup=await Promise.allSettled([sessions.shutdown()]);
+      if(sessionCleanup[0]?.status==="rejected")process.exitCode=1;
+      await loops;
+      await new Promise<void>(resolve=>{
+        const force=setTimeout(()=>{server.closeAllConnections();resolve();},5000);
+        server.close(()=>{clearTimeout(force);resolve();});
+      });
+      await pool.end();
+    }
+  })();
+  return shutdownWork;
 }
-process.once("SIGINT",()=>{void shutdown();});
-process.once("SIGTERM",()=>{void shutdown();});
+process.once("SIGINT",()=>{void shutdown().catch(()=>{process.exitCode=1;});});
+process.once("SIGTERM",()=>{void shutdown().catch(()=>{process.exitCode=1;});});

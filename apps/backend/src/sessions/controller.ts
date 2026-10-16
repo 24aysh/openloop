@@ -18,10 +18,12 @@ const hashOffer=(offer:string)=>createHash("sha256").update(offer).digest("hex")
 export class SessionController implements SessionControllerContract {
   private readonly runtimes=new Map<UUID,Runtime>();
   private readonly starts=new Map<string,StartEntry>();
+  private shuttingDown=false;
   constructor(private readonly repository:SessionRepository,private readonly gateway:RealtimeGateway,private readonly ingestor:TranscriptIngestor,
     private readonly realtimeSettings:RealtimeSettings,private readonly clock:()=>Date=()=>new Date()) {}
 
   async start(scope:UserScope,rawRequest:StartSessionRequest):Promise<Readonly<{response:StartSessionResponse;replayed:boolean}>> {
+    if(this.shuttingDown) throw new DomainError("service_unavailable","Backend is shutting down");
     const request=startSessionRequestSchema.parse(rawRequest);
     const offerHash=hashOffer(request.sdpOffer);
     const key=`${scope.userId}:${request.startRequestId}`;
@@ -40,6 +42,7 @@ export class SessionController implements SessionControllerContract {
 
   private async startFresh(scope:UserScope,request:StartSessionRequest,offerHash:string):Promise<StartSessionResponse> {
     const reservation=await this.repository.reserve(scope,{startRequestId:request.startRequestId,offerHash,timezone:request.timezone});
+    if(this.shuttingDown){if(reservation.created)await this.repository.failSetup(scope,reservation.session.id,"server_shutdown");throw new DomainError("service_unavailable","Backend is shutting down");}
     if(!reservation.created){
       if(reservation.offerHash!==offerHash) throw new DomainError("start_request_conflict","Start request was already used with another offer");
       await this.terminateExisting(reservation.session,"restart");
@@ -49,7 +52,9 @@ export class SessionController implements SessionControllerContract {
     try {
       const created=await this.gateway.createCall({sdpOffer:request.sdpOffer,session:buildRealtimeSessionConfig(this.realtimeSettings)},AbortSignal.timeout(10_000));
       callId=created.callId;
+      if(this.shuttingDown) throw new DomainError("service_unavailable","Backend is shutting down");
       const bound=await this.repository.bindCall(scope,reservation.session.id,callId);
+      if(this.shuttingDown) throw new DomainError("service_unavailable","Backend is shutting down");
       this.attachRuntime(scope,bound);
       return {sessionId:bound.id,sdpAnswer:created.sdpAnswer,state:"connecting"};
     } catch(error) {
@@ -208,7 +213,30 @@ export class SessionController implements SessionControllerContract {
     await Promise.all(open.flatMap(session=>session.callId===null?[]:[this.bestEffortHangup(session.callId)]));
   }
 
+  async drainForShutdown(timeoutMs=10_000):Promise<void> {
+    this.shuttingDown=true;
+    const open=await this.repository.listOpen();
+    for(const session of open){
+      const scope={userId:session.userId};
+      if(["initializing","connecting"].includes(session.state)) await this.repository.failSetup(scope,session.id,"server_shutdown");
+      else await this.repository.beginClose(scope,session.id,"server_shutdown");
+      const runtime=this.runtimes.get(session.id);if(runtime)runtime.ready=false;
+    }
+    const deadline=Date.now()+timeoutMs;
+    while(Date.now()<deadline){
+      await this.tick();
+      if((await this.repository.listOpen()).length===0)break;
+      await new Promise<void>(resolve=>setTimeout(resolve,Math.min(250,Math.max(1,deadline-Date.now()))));
+    }
+    for(const session of await this.repository.listOpen()){
+      if(["active","draining"].includes(session.state)) await this.ingestor.finishCapture({userId:session.userId},session.id,"restart");
+      else await this.repository.failSetup({userId:session.userId},session.id,"server_shutdown");
+    }
+    await this.shutdown();
+  }
+
   async shutdown():Promise<void> {
+    this.shuttingDown=true;
     for(const runtime of this.runtimes.values()) await this.failRuntime(runtime,"restart","restart");
   }
 }

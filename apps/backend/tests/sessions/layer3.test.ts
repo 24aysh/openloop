@@ -72,6 +72,9 @@ describe("session repository and controller",()=>{
     await waitFor(async()=>Number((await pool.query<{count:string}>("SELECT count(*) AS count FROM transcript_parts WHERE state='complete'")).rows[0]?.count)===1);
     await ingestor.scanReadySessions();
     expect((await controller.status(scope,started.response.sessionId)).reconciliationBacklog).toBe(1);
+    expect((await controller.status(scope,started.response.sessionId)).blockedReconciliationJobs).toBe(0);
+    await pool.query("UPDATE reconciliation_jobs SET state='blocked',finished_at=now(),last_error_code='test_block' WHERE session_id=$1",[started.response.sessionId]);
+    expect((await controller.status(scope,started.response.sessionId)).blockedReconciliationJobs).toBe(1);
   });
 
   test("clean close drains final text while a sideband loss is incomplete",async()=>{
@@ -123,11 +126,24 @@ describe("session repository and controller",()=>{
     expect(gateway.hangups).toContain("rtc_recover");
   });
 
-  test("status never exposes provider identities or transcript text",async()=>{
+  test("shutdown exposes draining then fences an unfinished capture at its deadline",async()=>{
+    const {controller,gateway}=setup();const {id}=await ready(controller,gateway);await controller.activate(scope,id);
+    const work=controller.drainForShutdown(50);
+    await waitFor(async()=>(await controller.status(scope,id)).state==="draining");
+    await work;
+    expect(await controller.status(scope,id)).toMatchObject({state:"incomplete",captureReady:false,errorCode:"restart"});
+    expect(gateway.hangups).toContain("rtc_test");
+    await expect(controller.start(scope,startRequest())).rejects.toMatchObject({code:"service_unavailable"});
+  });
+
+  test("status reports transcript gaps without exposing provider identities or text",async()=>{
     const {controller,gateway}=setup();const {id}=await ready(controller,gateway);
+    await pool.query("INSERT INTO transcript_items(id,user_id,session_id,provider_item_id,role,state) VALUES($1,$2,$3,'provider_private','user','pending')",
+      [crypto.randomUUID(),userId,id]);
     const status=await controller.status(scope,id);const serialized=JSON.stringify(status);
+    expect(status.transcriptGapCount).toBe(1);
     expect(serialized).not.toContain("rtc_test");expect(serialized).not.toContain("sess_test");expect(Object.keys(status).sort()).toEqual([
-      "appliedThrough","captureReady","closeReason","errorCode","orderedThrough","reconciliationBacklog","sealedThrough","sessionId","state",
+      "appliedThrough","blockedReconciliationJobs","captureReady","closeReason","errorCode","orderedThrough","reconciliationBacklog","sealedThrough","sessionId","state","transcriptGapCount",
     ]);
   });
 });
@@ -161,5 +177,16 @@ describe("OpenAI gateway and HTTP routes",()=>{
     const repository=new SessionRepository(pool);
     await repository.reserve(scope,{startRequestId:crypto.randomUUID() as UUID,offerHash:"a".repeat(64),timezone:"Asia/Kolkata"});
     await expect(repository.reserve(scope,{startRequestId:crypto.randomUUID() as UUID,offerHash:"b".repeat(64),timezone:"Asia/Kolkata"})).rejects.toBeInstanceOf(DomainError);
+  });
+
+  test("shutdown admission rejects new calls before provider setup",async()=>{
+    const {controller,gateway}=setup();const app=express();app.use(createSessionRouter(controller,()=>scope,()=>false));app.use(errorResponse);
+    const server=app.listen(0,"127.0.0.1");await new Promise<void>(resolve=>server.once("listening",resolve));
+    try{
+      const port=(server.address() as AddressInfo).port;
+      const response=await fetch(`http://127.0.0.1:${port}/api/sessions`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(startRequest())});
+      expect(response.status).toBe(503);expect(await response.json()).toMatchObject({error:{code:"service_unavailable"}});
+      expect(gateway.createCount).toBe(0);
+    }finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}
   });
 });
