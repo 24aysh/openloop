@@ -3,6 +3,7 @@ export * from "./errors";
 export * from "./sessions";
 export * from "./transcripts";
 export * from "./transcript-ingestion";
+export * from "./session-transport";
 export * from "./memories";
 export * from "./commitments";
 export * from "./reconciliation";
