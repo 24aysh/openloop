@@ -11,7 +11,7 @@ import {
 const sessionId="00000000-0000-4000-8000-000000000123";
 const response=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"Content-Type":"application/json"}});
 const status=(state:"connecting"|"active"|"draining"|"closed"|"incomplete"|"failed",captureReady=false,errorCode:string|null=null)=>({
-  sessionId,state,captureReady,orderedThrough:0,sealedThrough:0,appliedThrough:0,reconciliationBacklog:0,closeReason:null,errorCode,
+  sessionId,state,captureReady,orderedThrough:0,sealedThrough:0,appliedThrough:0,reconciliationBacklog:0,blockedReconciliationJobs:0,transcriptGapCount:0,closeReason:null,errorCode,
 });
 
 class FakeTrack implements MediaTrackLike {enabled=true;stops=0;stop():void{this.stops++;}}
@@ -32,6 +32,7 @@ class FakeEnvironment implements VoiceEnvironment {
   readonly track=new FakeTrack();readonly stream=new FakeStream(this.track);readonly peer=new FakePeer();
   requests:string[]=[];clock=0;permissionError:Error|null=null;serverState:"connecting"|"active"|"draining"|"closed"|"incomplete"|"failed"="connecting";
   captureReady=true;activationStarted=false;activationRelease:(()=>void)|null=null;permissionRelease:(()=>void)|null=null;holdPermission=false;detachCalls=0;
+  closeState:"closed"|"incomplete"|"failed"="closed";holdDrain=false;backlog=0;blocked=0;
 
   async getUserMedia():Promise<MediaStreamLike>{
     if(this.permissionError!==null)throw this.permissionError;
@@ -49,11 +50,11 @@ class FakeEnvironment implements VoiceEnvironment {
       this.serverState="active";
       return response(status("active",true));
     }
-    if(path.endsWith("/heartbeat")) return response(status(this.serverState,this.captureReady));
+    if(path.endsWith("/heartbeat")) return response({...status(this.serverState,this.captureReady),reconciliationBacklog:this.backlog,blockedReconciliationJobs:this.blocked});
     if(path.endsWith("/close")){this.serverState="draining";return response(status("draining"),202);}
     if(path===`/api/sessions/${sessionId}`){
-      if(this.serverState==="draining")this.serverState="closed";
-      return response(status(this.serverState,this.captureReady));
+      if(this.serverState==="draining"&&!this.holdDrain)this.serverState=this.closeState;
+      return response({...status(this.serverState,this.captureReady),reconciliationBacklog:this.backlog,blockedReconciliationJobs:this.blocked});
     }
     return response({error:{code:"not_found",message:"not found"}},404);
   }
@@ -103,7 +104,7 @@ describe("VoiceSessionClient",()=>{
     await expect(client.start()).rejects.toThrow("incomplete");
     expect(environment.track.enabled).toBe(false);expect(environment.track.stops).toBe(1);
     expect(environment.requests.some(request=>request.endsWith("/activate"))).toBe(false);
-    expect(client.state).toMatchObject({phase:"error",errorCode:"incomplete"});
+    expect(client.state).toMatchObject({phase:"incomplete",errorCode:null});
   });
 
   test("stop during microphone permission cannot create a backend session",async()=>{
@@ -121,5 +122,30 @@ describe("VoiceSessionClient",()=>{
     await waitFor(()=>environment.requests.includes(`POST /api/sessions/${sessionId}/close`));
     expect(environment.track.enabled).toBe(false);expect(environment.track.stops).toBe(1);
     expect(environment.peer.channel.closes).toBe(1);expect(environment.peer.closes).toBe(1);
+  });
+
+  test("an incomplete stop remains incomplete, with the microphone stopped",async()=>{
+    const environment=new FakeEnvironment();environment.closeState="incomplete";
+    const client=new VoiceSessionClient(environment);const start=client.start();
+    await waitFor(()=>environment.activationStarted);environment.activationRelease?.();await start;
+    await client.stop();
+    expect(client.state.phase).toBe("incomplete");expect(environment.track.enabled).toBe(false);
+    expect(client.state.status?.state).toBe("incomplete");
+  });
+
+  test("a close timeout is uncertain until a later status confirms closure",async()=>{
+    const environment=new FakeEnvironment();environment.holdDrain=true;
+    const client=new VoiceSessionClient(environment);const start=client.start();
+    await waitFor(()=>environment.activationStarted);environment.activationRelease?.();await start;
+    await client.stop();expect(client.state.phase).toBe("uncertain");expect(environment.track.enabled).toBe(false);
+    environment.holdDrain=false;await client.refreshStatus();expect(client.state.phase).toBe("closed");
+  });
+
+  test("status refresh preserves blocked extraction separately from backlog",async()=>{
+    const environment=new FakeEnvironment();environment.backlog=2;environment.blocked=1;
+    const client=new VoiceSessionClient(environment);const start=client.start();
+    await waitFor(()=>environment.activationStarted);environment.activationRelease?.();await start;
+    await client.refreshStatus();expect(client.state.status).toMatchObject({reconciliationBacklog:2,blockedReconciliationJobs:1});
+    await client.stop();
   });
 });
