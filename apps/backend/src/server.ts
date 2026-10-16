@@ -9,6 +9,7 @@ import { OpenAIRealtimeGateway, REALTIME_INSTRUCTIONS, SessionController, Sessio
 import { startTranscriptScanLoop, TranscriptIngestor } from "./transcripts";
 import { OpenAITextExtractor, ReconciliationRepository, ReconciliationWorker, startReconciliationLoop } from "./reconciliation";
 import { CommitmentLogEmitter, CommitmentScheduler, startSchedulingLoop, StdoutTerminalSink } from "./scheduling";
+import { logOperational, safeErrorCode } from "./operational-log";
 
 const config=readConfig();
 const pool=createPool(config.DATABASE_URL);
@@ -32,15 +33,21 @@ app.get("/health/live",(_request,response)=>response.json({ok:true}));
 app.get("/health/ready",async(_request,response)=>{try{if(!backgroundHealthy || shuttingDown)throw new Error("not_ready");await checkDatabase(pool);response.json({ok:true});}catch{response.status(503).json({ok:false});}});
 app.use(errorResponse);
 const server=app.listen(config.PORT,"127.0.0.1");
-const backgroundError=()=>{backgroundHealthy=false;process.exitCode=1;void shutdown().catch(()=>{process.exitCode=1;});};
-const transcriptScan=startTranscriptScanLoop(ingestor,backgroundError);
-const sessionSupervisor=startSessionSupervisor(sessions,backgroundError);
-const reconciliationScan=startReconciliationLoop(new ReconciliationWorker(new ReconciliationRepository(pool),new OpenAITextExtractor(config.OPENAI_API_KEY),new MindWriter(pool)),backgroundError);
-const schedulingScan=startSchedulingLoop(new CommitmentScheduler(pool),new CommitmentLogEmitter(pool,new StdoutTerminalSink()),backgroundError);
+logOperational("backend","listening",{port:config.PORT});
+const backgroundError=(loop:string)=>(error:unknown)=>{
+  logOperational("backend","background_failed",{loop,code:safeErrorCode(error)});
+  backgroundHealthy=false;process.exitCode=1;
+  void shutdown().catch(shutdownError=>{logOperational("backend","shutdown_failed",{code:safeErrorCode(shutdownError)});process.exitCode=1;});
+};
+const transcriptScan=startTranscriptScanLoop(ingestor,backgroundError("transcript_scan"));
+const sessionSupervisor=startSessionSupervisor(sessions,backgroundError("session_supervisor"));
+const reconciliationScan=startReconciliationLoop(new ReconciliationWorker(new ReconciliationRepository(pool),new OpenAITextExtractor(config.OPENAI_API_KEY),new MindWriter(pool)),backgroundError("reconciliation_scan"));
+const schedulingScan=startSchedulingLoop(new CommitmentScheduler(pool),new CommitmentLogEmitter(pool,new StdoutTerminalSink()),backgroundError("scheduling_scan"));
 let shutdownWork:Promise<void>|null=null;
 function shutdown():Promise<void> {
   if(shutdownWork!==null)return shutdownWork;
   shuttingDown=true;
+  logOperational("backend","shutdown_started");
   shutdownWork=(async()=>{
     const loops=Promise.allSettled([sessionSupervisor.stop(),transcriptScan.stop(),reconciliationScan.stop(),schedulingScan.stop()]);
     try{await sessions.drainForShutdown();}
@@ -53,6 +60,7 @@ function shutdown():Promise<void> {
         server.close(()=>{clearTimeout(force);resolve();});
       });
       await pool.end();
+      logOperational("backend","shutdown_complete");
     }
   })();
   return shutdownWork;
