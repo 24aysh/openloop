@@ -2,6 +2,7 @@ export * from "./common";
 export * from "./errors";
 export * from "./sessions";
 export * from "./transcripts";
+export * from "./transcript-ingestion";
 export * from "./memories";
 export * from "./commitments";
 export * from "./reconciliation";
