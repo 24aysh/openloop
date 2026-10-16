@@ -14,6 +14,7 @@
     "test:frontend": "bun test apps/frontend/tests",
     "test:reconciliation": "bun test apps/backend/tests/reconciliation",
     "test:scheduling": "bun test apps/backend/tests/scheduling",
+    "test:notifications": "bun test apps/backend/tests/notifications",
     "test:integration": "bun test apps/backend/tests/integration"
   },
   "devDependencies": {

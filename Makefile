@@ -12,6 +12,7 @@ test:
 	bun run test:sessions
 	bun run test:reconciliation
 	bun run test:scheduling
+	bun run test:notifications
 	bun run test:integration
 	bun run test:frontend
 
