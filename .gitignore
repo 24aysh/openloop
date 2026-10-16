@@ -1,5 +1,6 @@
 intervue.ai
 node_modules/
+/apps/frontend/dist/
 .env
 .env.*
 !.env.example
