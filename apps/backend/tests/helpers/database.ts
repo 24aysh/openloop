@@ -2,7 +2,7 @@ import pg from "pg";
 import { migrate } from "../../scripts/migrate";
 import { createPool } from "../../src/db/pool";
 
-const tables=["commitment_logs","change_sources","mind_changes","commitments","memories","reconciliation_jobs","transcript_parts","transcript_items","voice_sessions","mind_state","users"];
+const tables=["notification_events","commitment_logs","change_sources","mind_changes","commitments","memories","reconciliation_jobs","transcript_parts","transcript_items","voice_sessions","mind_state","users"];
 
 export function createTestPool():pg.Pool {
   const url=process.env.TEST_DATABASE_URL;
