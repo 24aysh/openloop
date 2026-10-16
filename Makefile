@@ -12,6 +12,7 @@ test:
 	bun run test:sessions
 	bun run test:voice
 	bun run test:reconciliation
+	bun run test:scheduling
 
 typecheck:
 	bun run check-types
