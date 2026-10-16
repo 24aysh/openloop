@@ -1,4 +1,4 @@
-# Manual test: local Openloop MVP
+# Manual test: openloop MVP
 
 This guide exercises the running browser, backend, and PostgreSQL database together. It uses the single demo user configured in `.env`. The live voice and extraction steps require an OpenAI API key with access to the configured Realtime, transcription, and Responses models; model output may differ from the example. The browser does not read Mind back into Realtime. Due commitments produce terminal logs and in-app reminders while the web app is open.
 
