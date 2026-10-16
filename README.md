@@ -1,6 +1,6 @@
 # Openloop
 
-This checkout implements layers 1 through 4 of the [MVP architecture](docs/mvp-architecture.md): PostgreSQL Mind storage, final-turn transcript ingestion and ordering, browser-to-Realtime WebRTC with a backend sideband, and durable text-model reconciliation of memories and commitments. The [layer 1](specs/layer-1-implementation.md), [layer 2](specs/layer-2-implementation.md), [layer 3](specs/layer-3-implementation.md), and [layer 4](specs/layer-4-implementation.md) specs define their acceptance gates. Commitment scheduling is a later layer.
+This checkout implements layers 1 through 5 of the [MVP architecture](docs/mvp-architecture.md): PostgreSQL Mind storage, final-turn transcript ingestion and ordering, browser-to-Realtime WebRTC with a backend sideband, durable text-model reconciliation of memories and commitments, and backend commitment logging. The [layer 1](specs/layer-1-implementation.md), [layer 2](specs/layer-2-implementation.md), [layer 3](specs/layer-3-implementation.md), [layer 4](specs/layer-4-implementation.md), and [layer 5](specs/layer-5-implementation.md) specs define their acceptance gates.
 
 ## Local setup
 
@@ -36,6 +36,8 @@ bun apps/backend/src/reconciliation/operator.ts skip <job-id> --reason "accepted
 
 Retry keeps the original transcript range and model versions. Skip advances the applied cursor without changing memories or commitments, and the transcript remains available. These commands operate on the configured local database; do not expose them as browser routes. Reconciliation uses [OpenAI Responses strict structured output](https://developers.openai.com/api/docs/guides/structured-outputs) with `store: false`. The sample `gpt-5.4` model is documented as supporting [Responses and structured outputs](https://developers.openai.com/api/docs/models/gpt-5.4); account access must be checked in your environment.
 
+The backend also checks open commitments every second. Once a resolved due time arrives, it records an ordered decision in `commitment_logs` and prints a JSON `commitment_due` line. The database records each schedule version once; a terminal line can repeat after a crash, so use its stable `logId` to identify duplicates. Terminal lines omit the private title. Completing or dismissing a commitment prevents future logs; a log already committed remains as history.
+
 The sample `DATABASE_URL` points to `openloop_dev`; `TEST_DATABASE_URL` points to `openloop_layer1_test`. Treat the sample credentials as local only. Never put a real API key in the repository.
 
 ```sh
@@ -43,6 +45,7 @@ bun test apps/backend/tests/mind
 bun test apps/backend/tests/transcripts
 bun test apps/backend/tests/sessions
 bun test apps/backend/tests/reconciliation
+bun test apps/backend/tests/scheduling
 bun test apps/frontend/tests/voice
 bun run --cwd apps/frontend build
 bun run check-types
