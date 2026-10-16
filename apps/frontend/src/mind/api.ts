@@ -12,6 +12,7 @@ export type Transcript=Readonly<{items:readonly Readonly<{item:Readonly<{id:stri
 export class ApiError extends Error {
   constructor(readonly code:string){super(code);this.name="ApiError";}
 }
+const browserRequest=(path:string,init?:RequestInit):Promise<Response>=>fetch(path,init);
 const record=(value:unknown):Record<string,unknown>=>{
   if(typeof value!=="object"||value===null||Array.isArray(value)) throw new ApiError("invalid_server_response");
   return value as Record<string,unknown>;
@@ -57,7 +58,7 @@ function transcript(value:unknown):Transcript {
 }
 
 export class MindApi {
-  constructor(private readonly request:(path:string,init?:RequestInit)=>Promise<Response>=fetch){}
+  constructor(private readonly request:(path:string,init?:RequestInit)=>Promise<Response>=browserRequest){}
   private async send(path:string,signal?:AbortSignal,init?:RequestInit):Promise<unknown>{
     let response:Response;
     try{response=await this.request(path,{...init,signal});}catch(error){if(signal?.aborted)throw error;throw new ApiError("backend_unreachable");}

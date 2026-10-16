@@ -7,6 +7,16 @@ const commitment:Commitment={id:"commitment-1",title:"Send presentation",subject
   dueText:"tomorrow",duePrecision:"unresolved",version:"2"};
 
 describe("MindApi boundary",()=>{
+  test("invokes the default browser transport without rebinding native fetch",async()=>{
+    const originalFetch=globalThis.fetch;let receiver:unknown;
+    globalThis.fetch=new Proxy(originalFetch,{apply(_target,thisArgument){receiver=thisArgument;return Promise.resolve(reply({items:[],nextCursor:null}));}});
+    try{
+      const api=new MindApi();
+      await api.memories({},null);
+      expect(receiver).not.toBe(api);
+    }finally{globalThis.fetch=originalFetch;}
+  });
+
   test("passes filters and opaque cursors to paged memory reads",async()=>{
     const paths:string[]=[];const api=new MindApi(async input=>{paths.push(String(input));return reply({items:[memory],nextCursor:"opaque+/="});});
     const first=await api.memories({text:"science fiction",kind:"semantic"},null);
