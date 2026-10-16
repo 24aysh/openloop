@@ -85,9 +85,12 @@ export function validateProposals(input: ClaimedExtraction, proposals: readonly 
     if (proposed.due_text && !sourceParts.some(part => part.text.includes(proposed.due_text ?? ""))) fail("invalid_due_evidence");
     const duePart = sourceParts.find(part => proposed.due_text && part.text.includes(proposed.due_text)) ?? sourceParts[0];
     if (!duePart) fail("invalid_evidence");
+    const supportingEvidence = [...sourceParts]
+      .sort((left, right) => left.ordinal - right.ordinal || left.contentIndex - right.contentIndex)
+      .map(part => part.text).join(" ");
     const due = old && proposal.action !== "update" && proposed.due_text === null
       ? { dueAt: old.dueAt, dueTimezone: old.dueTimezone, dueText: old.dueText, duePrecision: old.duePrecision }
-      : resolveDue(proposed, input.sessionTimezone, duePart);
+      : resolveDue(proposed, input.sessionTimezone, duePart, supportingEvidence);
     const value = commitmentValueSchema.safeParse({ title: proposed.title, subject: proposed.subject, status: proposed.status, priority: proposed.priority, ...due });
     if (!value.success) fail("invalid_commitment_value");
     if (old) {

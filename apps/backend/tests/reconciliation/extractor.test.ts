@@ -9,6 +9,8 @@ const userId = uuidSchema.parse("00000000-0000-4000-8000-000000000001");
 const sessionId = uuidSchema.parse("00000000-0000-4000-8000-000000000011");
 const itemId = uuidSchema.parse("00000000-0000-4000-8000-000000000021");
 const partId = uuidSchema.parse("00000000-0000-4000-8000-000000000031");
+const secondItemId = uuidSchema.parse("00000000-0000-4000-8000-000000000022");
+const secondPartId = uuidSchema.parse("00000000-0000-4000-8000-000000000032");
 const jobId = uuidSchema.parse("00000000-0000-4000-8000-000000000041");
 
 function fixture(text: string, anchor: string | null = "2026-10-15T05:00:00.000Z"): ClaimedExtraction {
@@ -97,6 +99,31 @@ describe("validation and due-time resolution", () => {
       local_date: null, relative_seconds: 600 };
     expect(resolveDue(relative, input.sessionTimezone, input.newParts[0]!).dueAt).toBe(timestampSchema.parse("2026-10-15T05:10:00.000Z"));
     expect(resolveDue({ ...relative, relative_seconds: 900 }, input.sessionTimezone, input.newParts[0]!).duePrecision).toBe("unresolved");
+  });
+  test("resolves a punctuated time and calendar date split across consecutive turns", () => {
+    const timeText = "Hello, remind me for my presentation at 3.10 a.m.";
+    const dateText = "am 17. Oktober.";
+    const base = fixture(dateText, "2026-10-16T21:39:30.000Z");
+    const input: ClaimedExtraction = { ...base,
+      claim: jobClaimSchema.parse({ ...base.claim, fromOrdinal: 2, throughOrdinal: 2 }),
+      earlierParts: [{ partId, itemId, ordinal: 1, contentIndex: 0, text: timeText, timeAnchorAt: "2026-10-16T21:39:00.000Z" }],
+      newParts: [{ partId: secondPartId, itemId: secondItemId, ordinal: 2, contentIndex: 0, text: dateText, timeAnchorAt: "2026-10-16T21:39:30.000Z" }],
+    };
+    const changes = validateProposals(input, [{
+      entity: "commitment", action: "create", target_id: null, expected_version: null, memory: null,
+      commitment: { title: "Remind about presentation", subject: "user", status: "open", priority: 2, due_text: dateText,
+        due_precision: "instant", temporal_kind: "local_datetime", offset_datetime: null, local_date: "2026-10-17", local_time: "03:10", timezone: null, relative_seconds: null },
+      sources: [{ part_id: partId, evidence_text: timeText }, { part_id: secondPartId, evidence_text: dateText }],
+    }]);
+    expect(changes.changes[0]?.value).toMatchObject({ dueAt: "2026-10-16T21:40:00.000Z", dueTimezone: "Asia/Kolkata", duePrecision: "instant" });
+  });
+  test("resolves an English ordinal calendar date", () => {
+    const text = "Remind me at 3:10 a.m. on 17th October";
+    const base = proposal("before Friday");
+    if (!base.commitment) throw new Error("Fixture error");
+    const due = resolveDue({ ...base.commitment, due_text: text, due_precision: "instant", temporal_kind: "local_datetime",
+      local_date: "2026-10-17", local_time: "03:10" }, "Asia/Kolkata", fixture(text, "2026-10-16T21:30:00.000Z").newParts[0]!);
+    expect(due.dueAt).toBe(timestampSchema.parse("2026-10-16T21:40:00.000Z"));
   });
   test("keeps two distinct episodic events about the same subject", () => {
     const text = "I met Ananya on Monday and discussed the project with Ananya on Tuesday";
