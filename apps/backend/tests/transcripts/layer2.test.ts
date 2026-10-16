@@ -65,6 +65,15 @@ describe("normalization",()=>{
     if(normalized.kind==="event" && normalized.event.kind==="assistant_response") expect(normalized.event.items[0]?.status).toBe("in_progress");
     expect(normalizeServerEvent(provider("response.done",{response:{id:"r2",status:"failed"}}),nowTimestamp(now)).kind).toBe("event");
   });
+  test("item finalization cannot replace insertion ordering",()=>{
+    const normalized=normalizeServerEvent(provider("conversation.item.done",{previous_item_id:"wrong",item:{
+      id:"a1",type:"message",role:"assistant",status:"completed",content:[{type:"output_audio",transcript:"done"}],
+    }}),nowTimestamp(now));
+    expect(normalized.kind).toBe("event");
+    if(normalized.kind==="event" && normalized.event.kind==="item") expect(normalized.event).toMatchObject({
+      itemId:"a1",predecessorKnown:false,previousItemId:null,itemStatus:"completed",
+    });
+  });
 });
 
 describe("transcript ingestion and ordering",()=>{
@@ -86,6 +95,31 @@ describe("transcript ingestion and ordering",()=>{
     const writer=new MindWriter(pool);
     await writer.applyExtraction({userId,jobId:uuidSchema.parse(job.id),sessionId:id,claimToken:token,baseMindRevision:counterSchema.parse("0"),fromOrdinal:1,throughOrdinal:3,inputHash:job.input_hash},{changes:[]});
     expect((await rows(id)).state.sealed_through).toBe(3);
+  });
+  test("assistant done preserves ordering established by added even when its predecessor differs",async()=>{
+    const id=await session();
+    await send(id,item("u1",null));await send(id,final("u1","hello"));
+    await send(id,provider("conversation.item.added",{previous_item_id:"u1",item:{
+      id:"a1",type:"message",role:"assistant",status:"in_progress",content:[],
+    }}));
+    await send(id,provider("conversation.item.done",{previous_item_id:null,item:{
+      id:"a1",type:"message",role:"assistant",status:"completed",content:[{type:"output_audio",transcript:"hello back"}],
+    }}));
+    expect((await rows(id)).items.map(row=>[row.provider_item_id,row.ordinal])).toEqual([["u1",1],["a1",2]]);
+    expect((await rows(id)).state.state).toBe("active");
+  });
+  test("late added ordering places an item first observed through done",async()=>{
+    const id=await session();
+    await send(id,item("u1",null));await send(id,final("u1","hello"));
+    await send(id,provider("conversation.item.done",{previous_item_id:null,item:{
+      id:"a1",type:"message",role:"assistant",status:"completed",content:[{type:"output_audio",transcript:"hello back"}],
+    }}));
+    expect((await rows(id)).items.find(row=>row.provider_item_id==="a1")?.ordinal).toBeNull();
+    await send(id,provider("conversation.item.added",{previous_item_id:"u1",item:{
+      id:"a1",type:"message",role:"assistant",status:"in_progress",content:[],
+    }}));
+    expect((await rows(id)).items.map(row=>[row.provider_item_id,row.ordinal])).toEqual([["u1",1],["a1",2]]);
+    expect((await rows(id)).state.state).toBe("active");
   });
   test("final before metadata is idempotent and conflicting text fences capture",async()=>{
     const id=await session();const first=final("u1","hello");

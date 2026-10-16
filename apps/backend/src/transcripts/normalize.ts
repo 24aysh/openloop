@@ -33,7 +33,10 @@ export function normalizeServerEvent(payload:unknown,receivedAt:Timestamp):Norma
     const content=item.content===undefined?null:parse(z.array(object).max(100),item.content);
     const layoutKnown=role==="user" && status==="completed" && content!==null && content.length>0;
     const unsupported=itemType!=="message" || role==="other" || (layoutKnown && !content.every(part=>part.type==="input_audio"));
-    return event({...common,kind:"item",itemId,...predecessor(raw),role,itemType,itemStatus:status,
+    // added/created establish the insertion position. done finalizes the same item and
+    // may repeat inconsistent predecessor metadata, so it must not move an item.
+    const ordering=type==="conversation.item.done"?{predecessorKnown:false,previousItemId:null}:predecessor(raw);
+    return event({...common,kind:"item",itemId,...ordering,role,itemType,itemStatus:status,
       expectedParts:layoutKnown && !unsupported ? content.length:null,unsupported});
   }
   if(type==="input_audio_buffer.committed") return event({...common,kind:"committed",itemId:parse(id,raw.item_id),...predecessor(raw)});
