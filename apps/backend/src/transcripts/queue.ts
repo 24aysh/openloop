@@ -1,6 +1,13 @@
 import { DomainError, nowTimestamp, type Counter, type IngestResult, type UserScope, type UUID } from "../contracts";
 import { normalizeServerEvent } from "./normalize";
 import type { TranscriptIngestor } from "./index";
+import { logOperational, safeErrorCode } from "../operational-log";
+
+function eventField(payload:unknown,name:"type"|"event_id"):string {
+  if(typeof payload!=="object"||payload===null||!(name in payload))return "unknown";
+  const value=(payload as Record<string,unknown>)[name];
+  return typeof value==="string"&&/^[a-zA-Z0-9_.-]{1,100}$/.test(value)?value:"unknown";
+}
 
 export class SerialTranscriptProcessor {
   private tail:Promise<void>=Promise.resolve();
@@ -16,6 +23,7 @@ export class SerialTranscriptProcessor {
     let normalized;
     try{normalized=normalizeServerEvent(payload,nowTimestamp(this.ingestor.clock()));}
     catch(error){
+      logOperational("transcript","normalization_failed",{sessionId:this.sessionId,providerEventType:eventField(payload,"type"),eventId:eventField(payload,"event_id"),code:safeErrorCode(error)});
       this.stopped=true;
       this.failure=error;
       await this.tail;
@@ -24,6 +32,7 @@ export class SerialTranscriptProcessor {
     }
     if(normalized.kind==="ignored") return null;
     if(this.pending>=this.capacity){
+      logOperational("transcript","queue_overflow",{sessionId:this.sessionId,capacity:this.capacity});
       this.stopped=true;
       const error=new DomainError("capture_closed","Transcript queue overflow");
       this.failure=error;

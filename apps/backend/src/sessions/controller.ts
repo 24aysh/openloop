@@ -6,6 +6,7 @@ import { SerialTranscriptProcessor, TranscriptIngestor } from "../transcripts";
 import { SessionRepository } from "./repository";
 import { buildRealtimeSessionConfig, buildSidebandUpdate, parseEffectiveSession } from "./realtime-config";
 import { parseSidebandMessage } from "./sideband";
+import { logOperational, safeErrorCode } from "../operational-log";
 
 type Runtime={session:SessionStateRecord;scope:UserScope;connection:SidebandConnection|null;processor:SerialTranscriptProcessor;opened:boolean;providerSaved:boolean;configAcknowledged:boolean;
   ready:boolean;intentionalClose:boolean;setupTimer:ReturnType<typeof setTimeout>|null;pending:Set<Promise<unknown>>;finalizing:Promise<void>|null;
@@ -14,6 +15,18 @@ type StartEntry={offerHash:string;promise:Promise<StartSessionResponse>;response
 
 const terminal=(state:string)=>["closed","incomplete","failed"].includes(state);
 const hashOffer=(offer:string)=>createHash("sha256").update(offer).digest("hex");
+function sidebandEventMetadata(text:string,isBinary:boolean):Readonly<{providerEventType:string;eventId:string}> {
+  if(isBinary)return {providerEventType:"binary",eventId:"unknown"};
+  try{
+    const value:unknown=JSON.parse(text);
+    if(typeof value==="object"&&value!==null){
+      const providerEventType="type" in value&&typeof value.type==="string"&&/^[a-z][a-z0-9_.]{0,79}$/.test(value.type)?value.type:"malformed";
+      const eventId="event_id" in value&&typeof value.event_id==="string"&&/^[a-zA-Z0-9_.-]{1,100}$/.test(value.event_id)?value.event_id:"unknown";
+      return {providerEventType,eventId};
+    }
+  }catch{}
+  return {providerEventType:"malformed",eventId:"unknown"};
+}
 
 export class SessionController implements SessionControllerContract {
   private readonly runtimes=new Map<UUID,Runtime>();
@@ -55,9 +68,11 @@ export class SessionController implements SessionControllerContract {
       if(this.shuttingDown) throw new DomainError("service_unavailable","Backend is shutting down");
       const bound=await this.repository.bindCall(scope,reservation.session.id,callId);
       if(this.shuttingDown) throw new DomainError("service_unavailable","Backend is shutting down");
+      logOperational("session","started",{sessionId:bound.id});
       this.attachRuntime(scope,bound);
       return {sessionId:bound.id,sdpAnswer:created.sdpAnswer,state:"connecting"};
     } catch(error) {
+      logOperational("session","setup_failed",{sessionId:reservation.session.id,code:safeErrorCode(error)});
       await this.repository.failSetup(scope,reservation.session.id,error instanceof DomainError && error.code==="setup_timeout"?"setup_timeout":"upstream_failure").catch(()=>undefined);
       if(callId!==null) await this.bestEffortHangup(callId);
       throw error;
@@ -68,14 +83,17 @@ export class SessionController implements SessionControllerContract {
     const processor=new SerialTranscriptProcessor(this.ingestor,scope,session.id,session.captureEpoch,1000);
     const runtime:Runtime={session,scope,connection:null,processor,opened:false,providerSaved:false,configAcknowledged:false,ready:false,intentionalClose:false,setupTimer:null,pending:new Set(),finalizing:null,fatal:null};
     this.runtimes.set(session.id,runtime);
+    logOperational("session","sideband_connecting",{sessionId:session.id});
     const remaining=Math.max(1,15_000-(this.clock().getTime()-session.createdAt.getTime()));
     runtime.setupTimer=setTimeout(()=>{void this.failRuntime(runtime,"setup_timeout","sideband_lost");},remaining);
     try {
       runtime.connection=this.gateway.connectSideband(session.callId!,{
         onOpen:()=>{runtime.opened=true;queueMicrotask(()=>{try{runtime.connection?.send(buildSidebandUpdate(this.realtimeSettings));}catch{void this.failRuntime(runtime,"sideband_protocol","sideband_lost");}});},
         onMessage:(text,isBinary)=>this.acceptMessage(runtime,text,isBinary),
-        onError:()=>{void this.failRuntime(runtime,"sideband_closed","sideband_lost");},
-        onClose:()=>{if(!runtime.intentionalClose) void this.failRuntime(runtime,"sideband_closed","sideband_lost");},
+        onError:error=>{logOperational("session","sideband_error",{sessionId:session.id,code:safeErrorCode(error)});
+          void this.failRuntime(runtime,"sideband_closed","sideband_lost");},
+        onClose:code=>{if(!runtime.intentionalClose){logOperational("session","sideband_closed",{sessionId:session.id,closeCode:code});
+          void this.failRuntime(runtime,"sideband_closed","sideband_lost");}},
       });
     } catch {void this.failRuntime(runtime,"sideband_open_failed","sideband_lost");}
   }
@@ -83,7 +101,10 @@ export class SessionController implements SessionControllerContract {
   private acceptMessage(runtime:Runtime,text:string,isBinary:boolean):void {
     if(runtime.pending.size>=1000){void this.failRuntime(runtime,"queue_overflow","queue_overflow");return;}
     let work!:Promise<void>;
-    work=this.handleMessage(runtime,text,isBinary).catch(()=>{void this.failRuntime(runtime,"sideband_protocol","sideband_lost");}).finally(()=>runtime.pending.delete(work));
+    work=this.handleMessage(runtime,text,isBinary).catch(error=>{
+      logOperational("session","sideband_event_failed",{sessionId:runtime.session.id,...sidebandEventMetadata(text,isBinary),code:safeErrorCode(error)});
+      void this.failRuntime(runtime,"sideband_protocol","sideband_lost");
+    }).finally(()=>runtime.pending.delete(work));
     runtime.pending.add(work);
   }
 
@@ -99,6 +120,7 @@ export class SessionController implements SessionControllerContract {
         runtime.configAcknowledged=true;
       }
       if(runtime.opened && runtime.providerSaved && runtime.configAcknowledged){
+        if(!runtime.ready)logOperational("session","sideband_ready",{sessionId:runtime.session.id});
         runtime.ready=true;
         if(runtime.setupTimer!==null){clearTimeout(runtime.setupTimer);runtime.setupTimer=null;}
       }
@@ -122,6 +144,7 @@ export class SessionController implements SessionControllerContract {
     if(!runtime?.ready || runtime.finalizing!==null) throw new DomainError("session_not_ready","Capture is not ready");
     await this.repository.activate(scope,sessionId);
     runtime.session=await this.repository.getRecord(scope,sessionId);
+    logOperational("session","active",{sessionId});
     return this.status(scope,sessionId);
   }
 
@@ -132,6 +155,7 @@ export class SessionController implements SessionControllerContract {
 
   async close(scope:UserScope,sessionId:UUID):Promise<SessionStatus> {
     const state=await this.repository.beginClose(scope,sessionId);
+    logOperational("session","close_requested",{sessionId,state:state.state});
     const runtime=this.runtimes.get(sessionId);
     if(runtime) runtime.ready=false;
     if(state.state==="draining" && runtime) void this.progressClose(runtime);
@@ -144,8 +168,14 @@ export class SessionController implements SessionControllerContract {
     runtime.finalizing=(async()=>{
       await Promise.allSettled(runtime.pending);
       try {await runtime.processor.drain();} catch {runtime.fatal={errorCode:"sideband_closed",reason:"sideband_lost"};}
-      if(runtime.fatal!==null){await this.ingestor.finishCapture(runtime.scope,runtime.session.id,runtime.fatal.reason);await this.cleanupRuntime(runtime);return;}
+      if(runtime.fatal!==null){
+        const result=await this.ingestor.finishCapture(runtime.scope,runtime.session.id,runtime.fatal.reason);
+        const status=await this.repository.status(runtime.scope,runtime.session.id,false);
+        logOperational("session","capture_ended",{sessionId:runtime.session.id,state:result.state,reason:result.reason,errorCode:status.errorCode,triggerCode:runtime.fatal.errorCode});
+        await this.cleanupRuntime(runtime);return;
+      }
       const result=await this.ingestor.finishCapture(runtime.scope,runtime.session.id,"clean");
+      logOperational("session",result.state==="draining"?"capture_draining":"capture_ended",{sessionId:runtime.session.id,state:result.state,reason:result.reason});
       if(result.state!=="draining") await this.cleanupRuntime(runtime);
     })().finally(()=>{runtime.finalizing=null;});
     return runtime.finalizing;
@@ -157,11 +187,20 @@ export class SessionController implements SessionControllerContract {
     runtime.ready=false;
     runtime.finalizing=(async()=>{
       const current=await this.repository.getRecord(runtime.scope,runtime.session.id);
-      if(["initializing","connecting"].includes(current.state)) await this.repository.failSetup(runtime.scope,runtime.session.id,runtime.fatal!.errorCode);
+      if(["initializing","connecting"].includes(current.state)){
+        await this.repository.failSetup(runtime.scope,runtime.session.id,runtime.fatal!.errorCode);
+        logOperational("session","capture_ended",{sessionId:runtime.session.id,state:"failed",errorCode:runtime.fatal!.errorCode});
+      }
       else if(["active","draining"].includes(current.state)){
         await Promise.allSettled(runtime.pending);
         try{await runtime.processor.drain();}catch{}
-        await this.ingestor.finishCapture(runtime.scope,runtime.session.id,runtime.fatal!.reason);
+        const result=await this.ingestor.finishCapture(runtime.scope,runtime.session.id,runtime.fatal!.reason);
+        const status=await this.repository.status(runtime.scope,runtime.session.id,false);
+        logOperational("session","capture_ended",{sessionId:runtime.session.id,state:result.state,reason:result.reason,errorCode:status.errorCode,triggerCode:runtime.fatal!.errorCode});
+      }
+      else {
+        const status=await this.repository.status(runtime.scope,runtime.session.id,false);
+        logOperational("session","capture_ended",{sessionId:runtime.session.id,state:current.state,reason:status.closeReason,errorCode:status.errorCode,triggerCode:runtime.fatal!.errorCode});
       }
       await this.cleanupRuntime(runtime);
     })();

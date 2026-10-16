@@ -13,7 +13,7 @@ async function allParts(client:pg.PoolClient,session:SessionRow,boundary:number)
     WHERE i.user_id=$1 AND i.session_id=$2 AND i.ordinal BETWEEN 1 AND $3 AND i.role='user'
     ORDER BY i.ordinal,p.content_index`,[session.user_id,session.id,boundary]);
   return result.rows.map(row=>{
-    if(row.text_hash===null) throw new TranscriptIntegrityError();
+    if(row.text_hash===null) throw new TranscriptIntegrityError("missing_text_hash");
     return {ordinal:row.ordinal,itemId:uuidSchema.parse(row.item_id),partId:uuidSchema.parse(row.part_id),contentIndex:row.content_index,textHash:row.text_hash,timeAnchorAt:row.time_anchor_at?.toISOString()??null};
   });
 }

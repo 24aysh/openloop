@@ -2,7 +2,7 @@ import type pg from "pg";
 import { DomainError, counterSchema, uuidSchema, userScopeSchema, type UserScope, type UUID } from "../contracts";
 
 export class TranscriptIntegrityError extends Error {
-  constructor() { super("Transcript integrity conflict"); this.name="TranscriptIntegrityError"; }
+  constructor(readonly detailCode: string) { super("Transcript integrity conflict"); this.name="TranscriptIntegrityError"; }
 }
 export type SessionRow = {
   id:string;user_id:string;timezone:string;state:string;capture_epoch:string;ordered_through:number;sealed_through:number;
