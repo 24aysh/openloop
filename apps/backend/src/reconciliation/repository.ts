@@ -17,6 +17,9 @@ type SessionRow = { id: string; timezone: string; created_at: Date; applied_thro
 type ItemRow = { id: string; ordinal: number; role: string; state: string; expected_parts: number | null; time_anchor_at: Date | null };
 type PartRow = { part_id: string; item_id: string; ordinal: number; content_index: number; final_text: string | null; text_hash: string | null; state: string; time_anchor_at: Date | null };
 type ClaimResult = ClaimedExtraction | null;
+export type FailureResult = Readonly<{ kind: "stale" }> | Readonly<{
+  kind: "updated"; state: "retry_wait" | "blocked"; code: string; nextAttemptAt: string | null;
+}>;
 
 async function earliest(client: pg.PoolClient, userId: UUID): Promise<string | null> {
   const result = await client.query<{ id: string }>(`SELECT j.id FROM reconciliation_jobs j JOIN voice_sessions s ON s.user_id=j.user_id AND s.id=j.session_id
@@ -115,7 +118,7 @@ export class ReconciliationRepository {
     return result.rows[0]?.state ?? null;
   }
 
-  async recordFailure(claim: ClaimedExtraction["claim"], failure: JobFailure): Promise<"updated" | "stale"> {
+  async recordFailure(claim: ClaimedExtraction["claim"], failure: JobFailure): Promise<FailureResult> {
     if (!/^[a-z0-9_]{1,80}$/.test(failure.code)) throw new Error("Unsafe failure code");
     return withTransaction(this.pool, { isolation: "read committed" }, async client => {
       await lockMindState(client, claim.userId);
@@ -123,16 +126,19 @@ export class ReconciliationRepository {
       const result = await client.query<JobRow>("SELECT * FROM reconciliation_jobs WHERE user_id=$1 AND id=$2 FOR UPDATE", [claim.userId, claim.jobId]);
       const job = result.rows[0];
       const now = await databaseNow(client);
-      if (!job || job.state !== "running" || job.claim_token !== claim.claimToken || !job.lease_until || job.lease_until <= now) return "stale";
+      if (!job || job.state !== "running" || job.claim_token !== claim.claimToken || !job.lease_until || job.lease_until <= now) return { kind: "stale" };
       const priorInvalid = job.last_error_code !== null && /^(invalid_|incomplete_output)/.test(job.last_error_code);
       const storedCode = failure.policy === "invalid" && !/^(invalid_|incomplete_output)/.test(failure.code) ? `invalid_${failure.code}` : failure.code;
       const blocked = failure.policy === "block" || job.attempts >= 3 || (failure.policy === "invalid" && priorInvalid);
       const baseDelay = failure.policy === "conflict" || failure.policy === "invalid" ? 1 : job.attempts === 1 ? 5 : 30;
       const delay = Math.min(300, Math.max(baseDelay, failure.retryAfterSeconds ?? 0));
-      await client.query(`UPDATE reconciliation_jobs SET state=$2,claim_token=NULL,lease_until=NULL,base_mind_revision=NULL,
+      const updated = await client.query<{state:"retry_wait"|"blocked";last_error_code:string;available_at:Date}>(`UPDATE reconciliation_jobs SET state=$2,claim_token=NULL,lease_until=NULL,base_mind_revision=NULL,
         last_error_code=$3,available_at=now()+($4::integer * interval '1 second'),finished_at=CASE WHEN $2='blocked' THEN now() ELSE NULL END,updated_at=now()
-        WHERE id=$1`, [job.id, blocked ? "blocked" : "retry_wait", storedCode, blocked ? 0 : delay]);
-      return "updated";
+        WHERE id=$1 RETURNING state,last_error_code,available_at`, [job.id, blocked ? "blocked" : "retry_wait", storedCode, blocked ? 0 : delay]);
+      const failureRow=updated.rows[0];
+      if(!failureRow) throw new Error("Failure update returned no row");
+      return {kind:"updated",state:failureRow.state,code:failureRow.last_error_code,
+        nextAttemptAt:failureRow.state==="blocked"?null:failureRow.available_at.toISOString()};
     });
   }
 

@@ -184,7 +184,9 @@ describe("durable claim and worker", () => {
     expect([a, b].filter(Boolean)).toHaveLength(1);
     const first = a ?? b;
     if (!first) throw new Error("Missing winner");
-    expect(await repository.recordFailure(first.claim, { code: "invalid_schema", policy: "invalid" })).toBe("updated");
+    expect(await repository.recordFailure(first.claim, { code: "invalid_schema", policy: "invalid" })).toMatchObject({
+      kind:"updated",state:"retry_wait",code:"invalid_schema",
+    });
     await pool.query("UPDATE reconciliation_jobs SET available_at=now() WHERE id=$1", [jobId]);
     const second = await new ReconciliationRepository(pool).claimNext();
     expect(second?.validationFeedback).toBe("invalid_schema");
@@ -223,7 +225,7 @@ describe("durable claim and worker", () => {
     expect(b.claim.claimToken).not.toBe(a.claim.claimToken);
     await writer.applyExtraction(b.claim, { changes: [] });
     await expect(writer.applyExtraction(a.claim, { changes: [] })).rejects.toMatchObject({ code: "stale_claim" });
-    expect(await repository.recordFailure(a.claim, { code: "model_timeout", policy: "retry" })).toBe("stale");
+    expect(await repository.recordFailure(a.claim, { code: "model_timeout", policy: "retry" })).toEqual({kind:"stale"});
     expect((await pool.query("SELECT state,attempts FROM reconciliation_jobs WHERE id=$1", [jobId])).rows[0]).toMatchObject({ state: "succeeded", attempts: 2 });
   });
 
