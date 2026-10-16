@@ -5,6 +5,14 @@ import { ExtractionError, type ClaimedExtraction, type ProposedChange } from "./
 function fail(code: string): never { throw new ExtractionError({ code, policy: "invalid" }); }
 const norm = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
 const meaningful = (value: string) => value.toLowerCase().match(/[a-z0-9]{4,}/g)?.filter(word => !["send", "have", "will", "that", "this", "with", "from", "about", "done"].includes(word)) ?? [];
+function referencesCommitment(evidence:string, old:Commitment, all:readonly Commitment[], action:ProposedChange["action"]):boolean {
+  const candidates=all.filter(item=>item.status!=="deleted" && (action==="reopen" ? item.status!=="open" : ["complete","dismiss"].includes(action) ? item.status==="open" : true));
+  const spoken=evidence.toLowerCase();
+  const named=meaningful(`${old.title} ${old.subject ?? ""}`).filter(word=>spoken.includes(word));
+  if(named.some(word=>candidates.filter(item=>meaningful(`${item.title} ${item.subject ?? ""}`).includes(word)).length===1))return true;
+  if(candidates.length!==1 || candidates[0]?.id!==old.id)return false;
+  return named.length>0 || /\b(it|that|this|the task|the reminder)\b/i.test(evidence);
+}
 const sameMemory = (old: Memory, value: MemoryValue) =>
   old.kind === value.kind && old.subject === value.subject && old.predicate === value.predicate && old.content === value.content && old.occurredAt === value.occurredAt && old.timeText === value.timeText;
 const sameCommitment = (old: Commitment, value: { title: string; subject: string | null; status: string; priority: number; dueAt: string | null; dueTimezone: string | null; dueText: string | null; duePrecision: string }) =>
@@ -76,25 +84,29 @@ export function validateProposals(input: ClaimedExtraction, proposals: readonly 
       continue;
     }
     if (proposal.memory !== null || proposal.commitment === null || !["create", "update", "complete", "dismiss", "reopen"].includes(proposal.action)) fail("invalid_commitment_action");
-    const old = proposal.target_id ? commitments.get(proposal.target_id) : null;
+    const old = proposal.target_id ? commitments.get(proposal.target_id) ?? null : null;
     if (proposal.target_id && (!old || old.version !== proposal.expected_version)) fail("invalid_commitment_target");
-    if (old?.manualOverride) continue;
+    if (old?.status==="deleted" || (old?.manualOverride && !["complete","dismiss"].includes(proposal.action))) continue;
     const proposed = proposal.commitment;
-    if (proposed.priority === 1 && (!old || old.priority !== 1) && !/\b(urgent|important|asap|high priority|critical)\b/i.test(evidence)) fail("unsupported_high_priority");
-    if (proposed.priority === 3 && (!old || old.priority !== 3) && !/\b(low priority|not urgent|whenever|no rush)\b/i.test(evidence)) fail("unsupported_low_priority");
-    if (proposed.due_text && !sourceParts.some(part => part.text.includes(proposed.due_text ?? ""))) fail("invalid_due_evidence");
+    const statusOnly=old!==null && ["complete","dismiss","reopen"].includes(proposal.action);
+    if (!statusOnly && proposed.priority === 1 && (!old || old.priority !== 1) && !/\b(urgent|important|asap|high priority|critical)\b/i.test(evidence)) fail("unsupported_high_priority");
+    if (!statusOnly && proposed.priority === 3 && (!old || old.priority !== 3) && !/\b(low priority|not urgent|whenever|no rush)\b/i.test(evidence)) fail("unsupported_low_priority");
+    const preserveDue=old!==null && (statusOnly || (proposed.due_text===old.dueText && !sourceParts.some(part=>part.text.includes(proposed.due_text ?? ""))) ||
+      (proposed.due_text===null && !/\b(no deadline|no due date|remove the deadline|without a deadline)\b/i.test(evidence)));
+    if (!preserveDue && proposed.due_text && !sourceParts.some(part => part.text.includes(proposed.due_text ?? ""))) fail("invalid_due_evidence");
     const duePart = sourceParts.find(part => proposed.due_text && part.text.includes(proposed.due_text)) ?? sourceParts[0];
     if (!duePart) fail("invalid_evidence");
     const supportingEvidence = [...sourceParts]
       .sort((left, right) => left.ordinal - right.ordinal || left.contentIndex - right.contentIndex)
       .map(part => part.text).join(" ");
-    const due = old && proposal.action !== "update" && proposed.due_text === null
+    const due = old && preserveDue
       ? { dueAt: old.dueAt, dueTimezone: old.dueTimezone, dueText: old.dueText, duePrecision: old.duePrecision }
       : resolveDue(proposed, input.sessionTimezone, duePart, supportingEvidence);
-    const value = commitmentValueSchema.safeParse({ title: proposed.title, subject: proposed.subject, status: proposed.status, priority: proposed.priority, ...due });
+    const value = commitmentValueSchema.safeParse({ title: statusOnly ? old.title : proposed.title, subject: statusOnly ? old.subject : proposed.subject,
+      status: proposed.status, priority: statusOnly ? old.priority : proposed.priority, ...due });
     if (!value.success) fail("invalid_commitment_value");
     if (old) {
-      if (!meaningful(`${old.title} ${old.subject ?? ""}`).some(word => evidence.toLowerCase().includes(word))) continue;
+      if (!referencesCommitment(evidence,old,input.mind.commitments,proposal.action)) continue;
       const valid = proposal.action === "update" ? proposed.status === old.status
         : proposal.action === "complete" ? old.status === "open" && proposed.status === "completed" && /\b(done|sent|finished|completed|did|delivered)\b/i.test(evidence)
           : proposal.action === "dismiss" ? old.status === "open" && proposed.status === "dismissed" && /\b(cancel|dismiss|drop|not doing)\b/i.test(evidence)

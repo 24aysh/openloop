@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { uuidSchema } from "../contracts";
-import { EXTRACTION_INSTRUCTIONS, EXTRACTION_JSON_SCHEMA, extractionContext, PROMPT_VERSION, SCHEMA_VERSION } from "./prompt";
+import { EXTRACTION_INSTRUCTIONS, LEGACY_EXTRACTION_INSTRUCTIONS, EXTRACTION_JSON_SCHEMA, extractionContext, PROMPT_VERSION, SCHEMA_VERSION } from "./prompt";
 import { ExtractionError, type ClaimedExtraction, type ExtractionOutcome, type TextExtractor } from "./types";
 
 const sourceSchema = z.strictObject({ part_id: uuidSchema, evidence_text: z.string().min(1).max(4000) });
@@ -53,7 +53,7 @@ export class OpenAITextExtractor implements TextExtractor {
   constructor(private readonly apiKey: string, private readonly request: ResponseRequest = fetch) {}
 
   async extract(input: ClaimedExtraction, signal: AbortSignal): Promise<ExtractionOutcome> {
-    if (input.promptVersion !== PROMPT_VERSION || input.schemaVersion !== SCHEMA_VERSION) throw new ExtractionError({ code: "unsupported_version", policy: "block" });
+    if (![PROMPT_VERSION,"v1"].includes(input.promptVersion) || input.schemaVersion !== SCHEMA_VERSION) throw new ExtractionError({ code: "unsupported_version", policy: "block" });
     const timeout = AbortSignal.timeout(45_000);
     const combined = AbortSignal.any([signal, timeout]);
     let response: Response;
@@ -64,7 +64,7 @@ export class OpenAITextExtractor implements TextExtractor {
         body: JSON.stringify({
           model: input.model, store: false, max_output_tokens: 4000, tools: [], tool_choice: "none",
           input: [
-            { role: "developer", content: EXTRACTION_INSTRUCTIONS },
+            { role: "developer", content: input.promptVersion === "v1" ? LEGACY_EXTRACTION_INSTRUCTIONS : EXTRACTION_INSTRUCTIONS },
             { role: "user", content: extractionContext(input) },
           ],
           text: { format: { type: "json_schema", name: "mind_changes_v1", strict: true, schema: EXTRACTION_JSON_SCHEMA } },

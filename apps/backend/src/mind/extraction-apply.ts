@@ -67,7 +67,8 @@ export async function applyExtraction(pool:pg.Pool,rawClaim:JobClaim,rawChanges:
     for(const id of commitmentIds){const result=await client.query(`SELECT ${COMMITMENT_COLUMNS} FROM commitments WHERE user_id=$1 AND id=$2 FOR UPDATE`,[claim.userId,id]);if(!result.rows[0]) throw new DomainError("stale_snapshot","Commitment target changed");commitmentRows.set(id,commitmentFromRow(result.rows[0]));}
     const prepared:PreparedChange[]=changes.map(change=>{
       const target=change.targetId===null?null:change.entity==="memory"?memoryRows.get(change.targetId)??null:commitmentRows.get(change.targetId)??null;
-      if(change.targetId && (!target || target.version!==change.expectedVersion || target.manualOverride)) throw new DomainError("stale_snapshot","Extraction target changed");
+      const allowedOverride=change.entity==="commitment" && ["complete","dismiss"].includes(change.action);
+      if(change.targetId && (!target || target.version!==change.expectedVersion || (target.manualOverride && !allowedOverride))) throw new DomainError("stale_snapshot","Extraction target changed");
       const sources:SourceRow[]=change.sources.map(source=>{
         const part=prefixById.get(source.transcriptPartId);
         if(!part || !part.final_text || !part.final_text.includes(source.evidenceText) || part.ordinal>claim.throughOrdinal) invalid("Invalid extraction evidence");
@@ -122,6 +123,9 @@ export async function applyExtraction(pool:pg.Pool,rawClaim:JobClaim,rawChanges:
         }else{
           if(!target || !change.targetId) invalid("Invalid commitment target");
           const old=commitmentSchema.parse(target);
+          if(old.status==="deleted" || (old.manualOverride && !["complete","dismiss"].includes(change.action))) invalid("Commitment is protected from extraction");
+          if(old.manualOverride && (old.title!==value.title || old.subject!==value.subject || old.priority!==value.priority || old.dueAt!==value.dueAt ||
+            old.dueTimezone!==value.dueTimezone || old.dueText!==value.dueText || old.duePrecision!==value.duePrecision)) invalid("Manual commitment details must be preserved");
           const validStatus=change.action==="update"?value.status===old.status:
             change.action==="complete"?old.status==="open"&&value.status==="completed":
               change.action==="dismiss"?old.status==="open"&&value.status==="dismissed":old.status!=="open"&&value.status==="open";
@@ -132,6 +136,7 @@ export async function applyExtraction(pool:pg.Pool,rawClaim:JobClaim,rawChanges:
             version=$11,schedule_version=$12,completed_at=$13,dismissed_at=$14,updated_at=now() WHERE user_id=$1 AND id=$2 RETURNING ${COMMITMENT_COLUMNS}`,
             [claim.userId,old.id,value.title,value.subject,value.status,value.priority,value.dueAt,value.dueTimezone,value.dueText,value.duePrecision,nextCounter(old.version),scheduleChanged?nextCounter(old.scheduleVersion):old.scheduleVersion,value.status==="completed"?(old.completedAt??clock):null,value.status==="dismissed"?(old.dismissedAt??clock):null]);
           record=commitmentFromRow(result.rows[0]??{});updatedCommitmentIds.push(record.id);
+          if(value.status!=="open" || scheduleChanged) await client.query("UPDATE commitment_logs SET canceled_at=now() WHERE user_id=$1 AND commitment_id=$2 AND emitted_at IS NULL AND canceled_at IS NULL",[claim.userId,old.id]);
         }
         const changeId=await addChange(client,{userId:claim.userId,commitmentId:record.id,jobId:claim.jobId,version:record.version,operation:change.action,actor:"reconciler",afterState:record});
         for(const source of sources) await client.query("INSERT INTO change_sources(user_id,change_id,transcript_part_id,evidence_text) VALUES($1,$2,$3,$4)",[claim.userId,changeId,source.partId,source.text]);

@@ -24,7 +24,7 @@ describe("migration and database constraints",()=>{
   test("migration is repeatable through its ledger and creates all domain tables",async()=>{
     await prepareTestDatabase(pool);
     const result=await pool.query<{tablename:string}>("SELECT tablename FROM pg_tables WHERE schemaname=current_schema() ORDER BY tablename");
-    for(const table of ["users","mind_state","voice_sessions","transcript_items","transcript_parts","reconciliation_jobs","memories","commitments","mind_changes","change_sources","commitment_logs"]) expect(result.rows.map(row=>row.tablename)).toContain(table);
+    for(const table of ["users","mind_state","voice_sessions","transcript_items","transcript_parts","reconciliation_jobs","memories","commitments","mind_changes","change_sources","commitment_logs","notification_events"]) expect(result.rows.map(row=>row.tablename)).toContain(table);
   });
   test("applied migration checksum drift is rejected",async()=>{
     await pool.query("UPDATE schema_migrations SET checksum=$1 WHERE version='0001_layer_1.sql'",["0".repeat(64)]);
@@ -77,6 +77,17 @@ describe("Mind reads and manual edits",()=>{
     expect(completed.scheduleVersion).toBe(counterVersion("2"));expect(completed.completedAt).not.toBeNull();
     const reopened=await writer.editCommitment({userId},first.id,{expectedVersion:completed.version,status:"open"});
     expect(reopened.scheduleVersion).toBe(counterVersion("3"));expect(reopened.completedAt).toBeNull();
+  });
+  test("deleting a commitment hides it, preserves its provenance, and rejects stale edits",async()=>{
+    await seedUser(pool);const initial=await seedCommitment(pool);
+    const deleted=await writer.deleteCommitment({userId},initial.id,{expectedVersion:initial.version});
+    expect(deleted.status).toBe("deleted");expect(deleted.manualOverride).toBe(true);
+    expect(deleted.scheduleVersion).toBe(counterVersion("2"));
+    expect((await reader.listCommitments({userId},page)).items).toEqual([]);
+    expect((await reader.getSnapshot({userId})).commitments[0]?.status).toBe("deleted");
+    expect((await reader.getProvenance({userId},{type:"commitment",id:initial.id})).at(-1)?.operation).toBe("delete");
+    await expect(writer.editCommitment({userId},initial.id,{expectedVersion:deleted.version,status:"open"})).rejects.toMatchObject({code:"invalid_input"});
+    await expect(writer.deleteCommitment({userId},initial.id,{expectedVersion:initial.version})).rejects.toMatchObject({code:"version_conflict"});
   });
   test("no-op edits fail; override release is explicit",async()=>{
     await seedUser(pool);const memory=await seedMemory(pool);
@@ -147,6 +158,20 @@ describe("atomic extraction apply",()=>{
     expect(provenance[0]?.sources[0]?.transcriptPartId).toBe(partId);
     const job=await pool.query("SELECT state,claim_token FROM reconciliation_jobs WHERE id=$1",[jobId]);
     expect(job.rows[0]?.state).toBe("succeeded");expect(job.rows[0]?.claim_token).toBeNull();
+  });
+  test("explicit spoken completion updates a manually overridden task while preserving its edited details",async()=>{
+    await seedUser(pool);const initial=await seedCommitment(pool);
+    const edited=await writer.editCommitment({userId},initial.id,{expectedVersion:initial.version,title:"Send the final presentation"});
+    const seeded=await seedRunningJob(pool,"I sent it");
+    await pool.query("UPDATE reconciliation_jobs SET base_mind_revision=$2 WHERE id=$1",[jobId,"1"]);
+    const claim={...seeded,baseMindRevision:counterVersion("1")};
+    const value=commitmentValueSchema.parse({title:edited.title,subject:edited.subject,status:"completed",priority:edited.priority,
+      dueAt:edited.dueAt,dueTimezone:edited.dueTimezone,dueText:edited.dueText,duePrecision:edited.duePrecision});
+    const result=await writer.applyExtraction(claim,{changes:[{entity:"commitment",action:"complete",targetId:edited.id,
+      expectedVersion:edited.version,value,sources:[{transcriptPartId:partId,evidenceText:"I sent it"}]}]});
+    expect(result.updatedCommitmentIds).toEqual([edited.id]);
+    const current=(await reader.getSnapshot({userId})).commitments[0];
+    expect(current).toMatchObject({status:"completed",title:edited.title,manualOverride:true});
   });
   test("empty changes still succeed and late stale worker changes zero rows",async()=>{
     await seedUser(pool);const claim=await seedRunningJob(pool);
@@ -249,6 +274,19 @@ describe("atomic extraction apply",()=>{
 });
 
 describe("HTTP boundary",()=>{
+  test("versioned DELETE removes a commitment from list reads",async()=>{
+    await seedUser(pool);const commitment=await seedCommitment(pool);
+    const app=express();app.use(express.json({limit:"32kb"}));app.use(createMindRouter(reader,writer,()=>({userId})));app.use(errorResponse);
+    const server=app.listen(0,"127.0.0.1");
+    try{
+      const address=server.address();if(!address || typeof address==="string")throw new Error("No test port");
+      const base=`http://127.0.0.1:${address.port}`;
+      const response=await fetch(`${base}/api/commitments/${commitment.id}`,{method:"DELETE",headers:{"content-type":"application/json"},
+        body:JSON.stringify({expectedVersion:commitment.version})});
+      expect(response.status).toBe(200);expect((await response.json()).status).toBe("deleted");
+      expect((await (await fetch(`${base}/api/commitments`)).json()).items).toEqual([]);
+    }finally{server.close();}
+  });
   test("scopes reads, validates fields, and emits safe error bodies",async()=>{
     await seedUser(pool);const memory=await seedMemory(pool);await seedUser(pool,otherUserId);
     const app=express();app.use(express.json({limit:"32kb"}));app.use(createMindRouter(reader,writer,()=>({userId:otherUserId})));app.use(errorResponse);

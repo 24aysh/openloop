@@ -57,10 +57,17 @@ export function resolveDue(proposal: ProposedCommitment, sessionTimezone: string
   if (proposal.temporal_kind === "none" && proposal.due_precision === "none" && text === null) return { dueAt: null, dueTimezone: null, dueText: null, duePrecision: "none" };
   if (text === null) return { dueAt: null, dueTimezone: null, dueText: null, duePrecision: "none" };
   if (!evidencePart.text.includes(text)) return unresolved(text);
-  if (proposal.temporal_kind === "unresolved" || proposal.due_precision === "unresolved") return unresolved(text);
   const zone = zoneFor(proposal, sessionTimezone);
   if (!zone) return unresolved(text);
   try {
+    if (proposal.temporal_kind === "unresolved" || proposal.due_precision === "unresolved") {
+      if (/\b(maybe|perhaps|sometime|around|approximately|if|unless|whenever)\b/i.test(supportingEvidence)) return unresolved(text);
+      const date=dateInEvidence(text,zone,evidencePart.timeAnchorAt)??dateInEvidence(supportingEvidence,zone,evidencePart.timeAnchorAt);
+      const time=timeInEvidence(text)??timeInEvidence(supportingEvidence);
+      if (!date || !time) return unresolved(text);
+      const dueAt=Temporal.PlainDateTime.from(`${date}T${time}`).toZonedDateTime(zone,{disambiguation:"reject"}).toInstant().toString();
+      return {dueAt:timestampSchema.parse(dueAt),dueTimezone:zone,dueText:text,duePrecision:"instant"};
+    }
     if (proposal.temporal_kind === "relative") {
       const match = text.match(/\bin\s+(\d+)\s+(minutes?|hours?|days?)\b/i);
       const unit = match?.[2]?.toLowerCase() ?? "";
@@ -75,13 +82,13 @@ export function resolveDue(proposal: ProposedCommitment, sessionTimezone: string
       return { dueAt: timestampSchema.parse(Temporal.Instant.from(value).toString()), dueTimezone: zone, dueText: text, duePrecision: "instant" };
     }
     if (proposal.temporal_kind === "local_date" || proposal.temporal_kind === "local_datetime") {
-      const date = dateInEvidence(supportingEvidence, zone, evidencePart.timeAnchorAt);
-      if (!date || date !== proposal.local_date) return unresolved(text);
-      const time = proposal.temporal_kind === "local_date" ? "09:00" : timeInEvidence(supportingEvidence);
-      if (!time || (proposal.temporal_kind === "local_datetime" && time !== proposal.local_time)) return unresolved(text);
-      const local = Temporal.PlainDateTime.from(`${date}T${time}`);
+      const date = dateInEvidence(text, zone, evidencePart.timeAnchorAt)??dateInEvidence(supportingEvidence, zone, evidencePart.timeAnchorAt);
+      if (!date) return unresolved(text);
+      const spokenTime=timeInEvidence(text)??timeInEvidence(supportingEvidence);
+      if (!spokenTime && (proposal.temporal_kind === "local_datetime" || /\b(?:at|by|before)\s+\d{1,2}\b/i.test(supportingEvidence))) return unresolved(text);
+      const local = Temporal.PlainDateTime.from(`${date}T${spokenTime ?? "09:00"}`);
       const dueAt = local.toZonedDateTime(zone, { disambiguation: "reject" }).toInstant().toString();
-      return { dueAt: timestampSchema.parse(dueAt), dueTimezone: zone, dueText: text, duePrecision: proposal.temporal_kind === "local_date" ? "date" : "instant" };
+      return { dueAt: timestampSchema.parse(dueAt), dueTimezone: zone, dueText: text, duePrecision: spokenTime ? "instant" : "date" };
     }
   } catch { return unresolved(text); }
   return unresolved(text);

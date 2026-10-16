@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { counterSchema, jobClaimSchema, timestampSchema, uuidSchema } from "../../src/contracts";
+import { commitmentSchema, counterSchema, jobClaimSchema, timestampSchema, uuidSchema } from "../../src/contracts";
 import { OpenAITextExtractor, parseExtractionOutput, retryAfterSeconds, type ResponseRequest } from "../../src/reconciliation/extractor";
 import { resolveDue } from "../../src/reconciliation/time";
 import { validateProposals } from "../../src/reconciliation/validate";
 import type { ClaimedExtraction, ProposedChange } from "../../src/reconciliation/types";
+import { EXTRACTION_INSTRUCTIONS } from "../../src/reconciliation/prompt";
 
 const userId = uuidSchema.parse("00000000-0000-4000-8000-000000000001");
 const sessionId = uuidSchema.parse("00000000-0000-4000-8000-000000000011");
@@ -30,6 +31,18 @@ function proposal(text: string): ProposedChange {
 }
 
 describe("Responses adapter", () => {
+  test("v2 prompt explicitly recognizes reminder requests and existing-task references",async()=>{
+    let instructions="";
+    const request:ResponseRequest=async(_url,init)=>{
+      const body=JSON.parse(String(init.body)) as {input:{content:string}[]};
+      instructions=body.input[0]?.content??"";
+      return Response.json({status:"completed",output:[{type:"message",content:[{type:"output_text",text:'{"schema_version":"1","changes":[]}'}]}]});
+    };
+    await new OpenAITextExtractor("fake",request).extract({...fixture("Remind me to call Ananya"),promptVersion:"v2"},new AbortController().signal);
+    expect(instructions).toBe(EXTRACTION_INSTRUCTIONS);
+    expect(instructions).toContain("Remind me to send the slides tomorrow");
+    expect(instructions).toContain("manual");
+  });
   test("sends strict stateless request and parses REST output items", async () => {
     let body: Record<string, unknown> | null = null;
     const request: ResponseRequest = async (_url, init) => {
@@ -67,6 +80,49 @@ describe("Responses adapter", () => {
 });
 
 describe("validation and due-time resolution", () => {
+  const existing=(manualOverride=false)=>commitmentSchema.parse({
+    id:uuidSchema.parse("00000000-0000-4000-8000-000000000081"),userId,title:"Send Ananya the presentation",subject:"Ananya",
+    status:"open",priority:2,dueAt:"2026-10-17T03:10:00.000Z",dueTimezone:"Asia/Kolkata",dueText:"tomorrow at 8:40 a.m.",duePrecision:"instant",
+    version:"2",scheduleVersion:"1",manualOverride,createdAt:"2026-10-15T04:00:00.000Z",updatedAt:"2026-10-15T04:00:00.000Z",
+    completedAt:null,dismissedAt:null,
+  });
+  test("extracts a direct reminder request as a source-backed commitment",()=>{
+    const text="Remind me to call Ananya tomorrow at 9 a.m.";
+    const input=fixture(text);
+    const change:ProposedChange={entity:"commitment",action:"create",target_id:null,expected_version:null,memory:null,
+      commitment:{title:"Call Ananya",subject:"Ananya",status:"open",priority:2,due_text:"tomorrow at 9 a.m.",due_precision:"instant",
+        temporal_kind:"local_datetime",offset_datetime:null,local_date:"2026-10-16",local_time:"09:00",timezone:null,relative_seconds:null},
+      sources:[{part_id:partId,evidence_text:text}]};
+    expect(validateProposals(input,[change]).changes[0]?.value).toMatchObject({title:"Call Ananya",dueAt:"2026-10-16T03:30:00.000Z"});
+  });
+  test("derives a spoken local deadline when the model's calendar date and time hints disagree",()=>{
+    const text="Remind me to call Ananya tomorrow at 9 a.m.";
+    const input=fixture(text,"2026-10-16T21:30:00.000Z");
+    const change:ProposedChange={entity:"commitment",action:"create",target_id:null,expected_version:null,memory:null,
+      commitment:{title:"Call Ananya",subject:"Ananya",status:"open",priority:2,due_text:"tomorrow at 9 a.m.",due_precision:"date",
+        temporal_kind:"local_datetime",offset_datetime:null,local_date:"2026-10-17",local_time:"09:00:00",timezone:"Asia/Kolkata",relative_seconds:null},
+      sources:[{part_id:partId,evidence_text:text}]};
+    expect(validateProposals(input,[change]).changes[0]?.value).toMatchObject({dueAt:"2026-10-18T03:30:00.000Z",duePrecision:"instant"});
+    const uncertain={...change,commitment:{...change.commitment!,due_precision:"unresolved" as const,temporal_kind:"unresolved" as const,
+      local_date:null,local_time:null}};
+    expect(validateProposals(input,[uncertain]).changes[0]?.value).toMatchObject({dueAt:"2026-10-18T03:30:00.000Z",duePrecision:"instant"});
+    const vague="Maybe remind me to call Ananya sometime tomorrow at 9 a.m.";
+    const vagueInput=fixture(vague,"2026-10-16T21:30:00.000Z");
+    const vagueProposal={...uncertain,sources:[{part_id:partId,evidence_text:vague}]};
+    expect(validateProposals(vagueInput,[vagueProposal]).changes[0]?.value).toMatchObject({dueAt:null,duePrecision:"unresolved"});
+  });
+  test("a unique spoken task reference can complete a manually overridden commitment without changing its details",()=>{
+    const text="I sent it.";const old=existing(true);const base=fixture(text);
+    const input:ClaimedExtraction={...base,mind:{...base.mind,commitments:[old]}};
+    const change:ProposedChange={entity:"commitment",action:"complete",target_id:old.id,expected_version:old.version,memory:null,
+      commitment:{title:"Wrong title",subject:null,status:"completed",priority:1,due_text:null,due_precision:"none",temporal_kind:"none",
+        offset_datetime:null,local_date:null,local_time:null,timezone:null,relative_seconds:null},
+      sources:[{part_id:partId,evidence_text:text}]};
+    expect(validateProposals(input,[change]).changes[0]?.value).toMatchObject({title:old.title,priority:old.priority,dueAt:old.dueAt,status:"completed"});
+    const second=commitmentSchema.parse({...old,id:uuidSchema.parse("00000000-0000-4000-8000-000000000082"),title:"Email the invoice"});
+    expect(validateProposals({...input,mind:{...input.mind,commitments:[old,second]}},[change]).changes).toEqual([]);
+    expect(validateProposals(input,[{...change,action:"update",commitment:{...change.commitment!,status:"open"}}]).changes).toEqual([]);
+  });
   test("resolves before Friday to the preceding local 09:00 with evidence", () => {
     const text = "I promised to send Ananya the presentation before Friday";
     const changes = validateProposals(fixture(text), [proposal("before Friday")]);
@@ -84,8 +140,8 @@ describe("validation and due-time resolution", () => {
   test("does not schedule unsupported, ambiguous, or DST-gap times", () => {
     const base = proposal("before Friday");
     if (!base.commitment) throw new Error("Fixture error");
-    const unsupported = resolveDue({ ...base.commitment, temporal_kind: "local_date", local_date: "2026-10-16" }, "Asia/Kolkata", fixture("before Friday").newParts[0]!);
-    expect(unsupported.duePrecision).toBe("unresolved");
+    const corrected = resolveDue({ ...base.commitment, temporal_kind: "local_date", local_date: "2026-10-16" }, "Asia/Kolkata", fixture("before Friday").newParts[0]!);
+    expect(corrected.dueAt).toBe(timestampSchema.parse("2026-10-15T03:30:00.000Z"));
     const ambiguous = resolveDue({ ...base.commitment, temporal_kind: "local_datetime", due_text: "tomorrow at 9", local_date: "2026-10-16", local_time: "09:00" }, "Asia/Kolkata", fixture("tomorrow at 9").newParts[0]!);
     expect(ambiguous.dueAt).toBeNull();
     const dst = resolveDue({ ...base.commitment, temporal_kind: "local_datetime", due_text: "2026-03-08 02:30", local_date: "2026-03-08", local_time: "02:30", timezone: "America/New_York" }, "America/New_York", fixture("2026-03-08 02:30").newParts[0]!);

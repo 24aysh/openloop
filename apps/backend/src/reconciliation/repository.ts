@@ -17,6 +17,17 @@ type SessionRow = { id: string; timezone: string; created_at: Date; applied_thro
 type ItemRow = { id: string; ordinal: number; role: string; state: string; expected_parts: number | null; time_anchor_at: Date | null };
 type PartRow = { part_id: string; item_id: string; ordinal: number; content_index: number; final_text: string | null; text_hash: string | null; state: string; time_anchor_at: Date | null };
 type ClaimResult = ClaimedExtraction | null;
+function recentContext(parts:readonly CompletedUserPart[],beforeOrdinal:number):CompletedUserPart[] {
+  const selected:CompletedUserPart[]=[];
+  let bytes=0;
+  for(let index=parts.length-1;index>=0;index--){
+    const part=parts[index];if(!part)continue;
+    const size=Buffer.byteLength(part.text,"utf8");
+    if(part.ordinal>=beforeOrdinal || bytes+size>12000)continue;
+    selected.push(part);bytes+=size;
+  }
+  return selected.reverse();
+}
 export type FailureResult = Readonly<{ kind: "stale" }> | Readonly<{
   kind: "updated"; state: "retry_wait" | "blocked"; code: string; nextAttemptAt: string | null;
 }>;
@@ -107,7 +118,7 @@ export class ReconciliationRepository {
         fromOrdinal: job.from_ordinal, throughOrdinal: job.through_ordinal, inputHash: job.input_hash });
       return { claim, attempt: job.attempts + 1, model: job.model, promptVersion: job.prompt_version, schemaVersion: job.schema_version,
         sessionTimezone: session.timezone, sessionStartedAt: session.created_at.toISOString(),
-        earlierParts: parts.filter(part => part.ordinal < job.from_ordinal), newParts: parts.filter(part => part.ordinal >= job.from_ordinal),
+        earlierParts: recentContext(parts,job.from_ordinal), newParts: parts.filter(part => part.ordinal >= job.from_ordinal),
         mind: { revision, memories: memories.rows.map(memoryFromRow), commitments: commitments.rows.map(commitmentFromRow) },
         validationFeedback: job.last_error_code && /^(invalid_|incomplete_output)/.test(job.last_error_code) ? job.last_error_code : null };
     });
