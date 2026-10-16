@@ -50,8 +50,8 @@ export function CommitmentsView({notificationRevision=0}:{notificationRevision?:
     finally{if(!controller.signal.aborted)setBusy(false);}
   }
   return <section aria-label="Commitments" className="view">
-    <div className="page-heading"><div><span className="eyebrow">Tasks & reminders</span><h2>Commitments</h2>
-      <p>Keep track of promises, deadlines, and the things you intend to do.</p></div>
+    <div className="page-heading"><div><h2>Commitments</h2>
+      </div>
       <button className="text-action" type="button" onClick={()=>setRevision(value=>value+1)}>Refresh</button></div>
     <div className="toolbar compact-toolbar"><label className="field"><span>Show</span><select value={status} onChange={event=>{setItems([]);setConfirming(null);setStatus(event.target.value as VisibleStatus);}}>
       <option value="all">All commitments</option><option value="open">Open</option><option value="completed">Completed</option><option value="dismissed">Dismissed</option>

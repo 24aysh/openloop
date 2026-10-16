@@ -43,8 +43,8 @@ export function MindView(){
     finally{if(!controller.signal.aborted)setBusy(false);}
   }
   return <section aria-label="Mind" className="view">
-    <div className="page-heading"><div><span className="eyebrow">Personal memory</span><h2>Mind</h2>
-      <p>Facts and events gathered from your completed conversations.</p></div>
+    <div className="page-heading"><div><h2>mind</h2>
+      </div>
       <button className="text-action" type="button" onClick={()=>setRevision(value=>value+1)}>Refresh</button></div>
     <form className="toolbar search-toolbar" onSubmit={event=>{event.preventDefault();setFilters({text:draftSearch.trim(),kind:draftKind});}}>
       <label className="field field-grow"><span>Search memories</span><input type="search" placeholder="Search by person, topic, or detail" value={draftSearch} onChange={event=>setDraftSearch(event.target.value)} maxLength={500}/></label>

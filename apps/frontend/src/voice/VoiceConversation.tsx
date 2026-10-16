@@ -17,8 +17,8 @@ export function VoiceConversation() {
   const mindCurrent=state.phase==="closed"&&status!==null&&status.errorCode===null&&status.closeReason==="clean"&&status.transcriptGapCount===0&&
     status.appliedThrough>=status.sealedThrough&&status.reconciliationBacklog===0;
   return <section aria-label="Voice conversation" className="view">
-    <div className="page-heading"><div><span className="eyebrow">Conversation</span><h2>Voice</h2>
-      <p>Talk naturally. Completed turns are captured and processed into your Mind.</p></div></div>
+    <div className="page-heading"><div><h2>Voice</h2>
+      </div></div>
     <div className="voice-card">
       <div className="voice-orb" data-active={running} aria-hidden="true"><span/><span/><i/></div>
       <div className="voice-copy">

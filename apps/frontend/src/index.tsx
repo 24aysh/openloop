@@ -12,7 +12,7 @@ function App(){
   const onDue=useCallback(()=>setNotificationRevision(value=>value+1),[]);
   return <div className="app-shell">
     <header className="app-header">
-      <h1>Openloop</h1>
+      <h1>openloop</h1>
     </header>
     <nav aria-label="Main navigation" className="main-nav">
       <button type="button" aria-current={view==="voice"?"page":undefined} onClick={()=>setView("voice")}>Voice</button>
