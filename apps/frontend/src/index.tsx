@@ -10,16 +10,21 @@ function App(){
   const [view,setView]=useState<"voice"|"mind"|"commitments">("voice");
   const [notificationRevision,setNotificationRevision]=useState(0);
   const onDue=useCallback(()=>setNotificationRevision(value=>value+1),[]);
-  return <main><header><h1>Openloop</h1><p>Listen · Understand · Remember · Anticipate · Act</p></header>
-    <nav aria-label="Main navigation" className="row">
+  return <div className="app-shell">
+    <header className="app-header">
+      <h1>Openloop</h1>
+    </header>
+    <nav aria-label="Main navigation" className="main-nav">
       <button type="button" aria-current={view==="voice"?"page":undefined} onClick={()=>setView("voice")}>Voice</button>
       <button type="button" aria-current={view==="mind"?"page":undefined} onClick={()=>setView("mind")}>Mind</button>
       <button type="button" aria-current={view==="commitments"?"page":undefined} onClick={()=>setView("commitments")}>Commitments</button>
     </nav>
-    <div hidden={view!=="voice"}><VoiceConversation/></div>
-    {view==="mind"?<MindView/>:null}{view==="commitments"?<CommitmentsView notificationRevision={notificationRevision}/>:null}
+    <main className="app-content">
+      <div hidden={view!=="voice"}><VoiceConversation/></div>
+      {view==="mind"?<MindView/>:null}{view==="commitments"?<CommitmentsView notificationRevision={notificationRevision}/>:null}
+    </main>
     <NotificationToasts onOpenCommitments={()=>setView("commitments")} onDue={onDue}/>
-  </main>;
+  </div>;
 }
 
 const root=document.getElementById("root");

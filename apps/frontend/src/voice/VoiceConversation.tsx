@@ -16,25 +16,40 @@ export function VoiceConversation() {
   const status=state.status;
   const mindCurrent=state.phase==="closed"&&status!==null&&status.errorCode===null&&status.closeReason==="clean"&&status.transcriptGapCount===0&&
     status.appliedThrough>=status.sealedThrough&&status.reconciliationBacklog===0;
-  return <section aria-label="Voice conversation">
-    <h2>Voice conversation</h2>
-    <p aria-live="polite">{state.phase.replaceAll("_"," ")}</p>
-    {state.errorCode!==null?<p role="alert">{errorMessage(state.errorCode)}</p>:null}
-    <button type="button" disabled={running} onClick={()=>{void start().catch(()=>undefined);}}>Start conversation</button>
-    <button type="button" disabled={!running||state.phase==="draining"} onClick={()=>{void stop().catch(()=>undefined);}}>Stop</button>
-    {state.phase==="uncertain"?<button type="button" onClick={()=>{void stop().catch(()=>undefined);}}>Try to close</button>:null}
-    {state.sessionId!==null?<><div className="detail">
-      <p>Session {state.sessionId}</p>
-      {status?<><p>Captured through turn {status.sealedThrough}; Mind applied through turn {status.appliedThrough}.</p>
-        <p>Extraction backlog: {status.reconciliationBacklog}; blocked: {status.blockedReconciliationJobs}.</p>
-        {status.transcriptGapCount>0?<p role="alert">{status.transcriptGapCount} transcript turn(s) have gaps or incomplete capture. Inspect the transcript.</p>:null}
-        {status.blockedReconciliationJobs>0?<p role="alert">Mind extraction is blocked. Transcript remains available.</p>:null}
-        {status.state==="closed"&&!mindCurrent?<p>Capture ended. Mind processing may still be pending or incomplete.</p>:null}
-        {mindCurrent?<p>Mind is up to date for the sealed transcript prefix.</p>:null}
-        {status.state==="incomplete"||status.state==="failed"?<p role="alert">Capture did not finish cleanly. Some speech may be missing.</p>:null}
+  return <section aria-label="Voice conversation" className="view">
+    <div className="page-heading"><div><span className="eyebrow">Conversation</span><h2>Voice</h2>
+      <p>Talk naturally. Completed turns are captured and processed into your Mind.</p></div></div>
+    <div className="voice-card">
+      <div className="voice-orb" data-active={running} aria-hidden="true"><span/><span/><i/></div>
+      <div className="voice-copy">
+        <span className="status-badge" data-phase={state.phase} aria-live="polite"><i/>{state.phase.replaceAll("_"," ")}</span>
+        <h3>{running?"Openloop is listening":"Start a new conversation"}</h3>
+        <p>{running?"Speak as you normally would. Stop when you are ready to save the completed turns.":"Your microphone stays off until you start."}</p>
+        <div className="voice-actions">
+          <button className="primary-action" type="button" disabled={running} onClick={()=>{void start().catch(()=>undefined);}}>Start conversation</button>
+          <button className="secondary-action" type="button" disabled={!running||state.phase==="draining"} onClick={()=>{void stop().catch(()=>undefined);}}>Stop</button>
+          {state.phase==="uncertain"?<button className="secondary-action" type="button" onClick={()=>{void stop().catch(()=>undefined);}}>Try to close</button>:null}
+        </div>
+      </div>
+    </div>
+    {state.errorCode!==null?<p className="callout callout-error" role="alert">{errorMessage(state.errorCode)}</p>:null}
+    {state.sessionId!==null?<><div className="session-panel">
+      <div className="panel-heading"><div><span className="eyebrow">Current session</span><h3>Capture details</h3></div>
+        <span className="session-id" title={state.sessionId}>{state.sessionId.slice(0,8)}</span></div>
+      {status?<><div className="stat-grid">
+        <div><span>Captured through</span><strong>Turn {status.sealedThrough}</strong></div>
+        <div><span>Mind applied through</span><strong>Turn {status.appliedThrough}</strong></div>
+        <div><span>Extraction backlog</span><strong>{status.reconciliationBacklog}</strong></div>
+        <div><span>Blocked jobs</span><strong>{status.blockedReconciliationJobs}</strong></div>
+      </div>
+        {status.transcriptGapCount>0?<p className="callout callout-error" role="alert">{status.transcriptGapCount} transcript turn(s) have gaps or incomplete capture. Inspect the transcript.</p>:null}
+        {status.blockedReconciliationJobs>0?<p className="callout callout-error" role="alert">Mind extraction is blocked. Transcript remains available.</p>:null}
+        {status.state==="closed"&&!mindCurrent?<p className="callout">Capture ended. Mind processing may still be pending or incomplete.</p>:null}
+        {mindCurrent?<p className="callout callout-success">Mind is up to date for this conversation.</p>:null}
+        {status.state==="incomplete"||status.state==="failed"?<p className="callout callout-error" role="alert">Capture did not finish cleanly. Some speech may be missing.</p>:null}
       </>:null}
-      <div className="row"><button type="button" onClick={()=>{void refreshStatus();}}>Refresh status</button>
-        <button type="button" onClick={()=>setShowTranscript(value=>!value)}>{showTranscript?"Hide transcript":"Inspect transcript"}</button></div>
+      <div className="panel-actions"><button className="text-action" type="button" onClick={()=>{void refreshStatus();}}>Refresh status</button>
+        <button className="secondary-action" type="button" onClick={()=>setShowTranscript(value=>!value)}>{showTranscript?"Hide transcript":"Inspect transcript"}</button></div>
     </div>{showTranscript?<TranscriptView sessionId={state.sessionId}/>:null}</>:null}
   </section>;
 }
