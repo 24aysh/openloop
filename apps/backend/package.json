@@ -1,0 +1,11 @@
+{
+  "name": "@openloop/backend",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@js-temporal/polyfill": "0.5.1",
+    "express": "5.2.1",
+    "pg": "8.16.3",
+    "zod": "4.3.6"
+  }
+}
