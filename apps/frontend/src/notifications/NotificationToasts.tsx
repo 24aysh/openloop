@@ -49,11 +49,11 @@ export function NotificationToasts({onOpenCommitments,onDue}:{onOpenCommitments:
   },[onDue]);
   useEffect(()=>{const timer=setInterval(()=>setToasts(old=>old.filter(item=>item.expiresAt>Date.now())),1000);return()=>clearInterval(timer);},[]);
   return <aside className="notification-area" aria-label="Reminders" aria-live="polite">
-    {!connected?<p className="notification-connection">Live reminders reconnecting…</p>:null}
+    {!connected?<p className="notification-connection"><span className="loading-dot"/>Live reminders reconnecting…</p>:null}
     {toasts.map(item=><div className="notification-toast" key={item.id} role="status">
-      <strong>Commitment due</strong><p>{item.title}</p>
-      <div className="row"><button type="button" onClick={onOpenCommitments}>View commitments</button>
-        <button type="button" aria-label={`Dismiss reminder for ${item.title}`} onClick={()=>setToasts(old=>old.filter(toast=>toast.id!==item.id))}>Dismiss</button></div>
+      <div className="toast-heading"><span className="toast-icon" aria-hidden="true"/><div><span className="eyebrow">Commitment due</span><strong>{item.title}</strong></div></div>
+      <div className="card-actions"><button className="primary-action" type="button" onClick={onOpenCommitments}>View commitment</button>
+        <button className="text-action" type="button" aria-label={`Dismiss reminder for ${item.title}`} onClick={()=>setToasts(old=>old.filter(toast=>toast.id!==item.id))}>Dismiss</button></div>
     </div>)}
   </aside>;
 }

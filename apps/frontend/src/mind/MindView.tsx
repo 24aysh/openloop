@@ -42,28 +42,31 @@ export function MindView(){
       setActionError(reason instanceof Error?reason.message:"request_failed");}}
     finally{if(!controller.signal.aborted)setBusy(false);}
   }
-  return <section aria-label="Mind">
-    <h2>Mind</h2><p>Facts and events extracted from completed conversation turns.</p>
-    <form className="row" onSubmit={event=>{event.preventDefault();setFilters({text:draftSearch.trim(),kind:draftKind});}}>
-      <label>Search <input value={draftSearch} onChange={event=>setDraftSearch(event.target.value)} maxLength={500}/></label>
-      <label>Kind <select value={draftKind} onChange={event=>setDraftKind(event.target.value as Filters["kind"])}>
-        <option value="all">All</option><option value="semantic">Facts</option><option value="episodic">Events</option>
-      </select></label><button type="submit">Search</button><button type="button" onClick={()=>setRevision(value=>value+1)}>Refresh</button>
+  return <section aria-label="Mind" className="view">
+    <div className="page-heading"><div><span className="eyebrow">Personal memory</span><h2>Mind</h2>
+      <p>Facts and events gathered from your completed conversations.</p></div>
+      <button className="text-action" type="button" onClick={()=>setRevision(value=>value+1)}>Refresh</button></div>
+    <form className="toolbar search-toolbar" onSubmit={event=>{event.preventDefault();setFilters({text:draftSearch.trim(),kind:draftKind});}}>
+      <label className="field field-grow"><span>Search memories</span><input type="search" placeholder="Search by person, topic, or detail" value={draftSearch} onChange={event=>setDraftSearch(event.target.value)} maxLength={500}/></label>
+      <label className="field"><span>Memory type</span><select value={draftKind} onChange={event=>setDraftKind(event.target.value as Filters["kind"])}>
+        <option value="all">All memories</option><option value="semantic">Facts</option><option value="episodic">Events</option>
+      </select></label><button className="primary-action toolbar-action" type="submit">Search</button>
     </form>
-    {error?<p role="alert">{errorMessage(error)}</p>:null}
-    {actionError?<p role="alert">{errorMessage(actionError)}</p>:null}
-    {loading?<p>Loading memories…</p>:error!==null&&items.length===0?null:items.length===0?<p>No memories found.</p>:
-      <ul className="cards">{items.map(item=><li key={item.id}>
-        <small>{item.kind} · {item.subject}{item.timeText?` · ${item.timeText}`:""}</small>
-        <p>{item.content}</p>
-        {editing===item.id?<form onSubmit={event=>{event.preventDefault();void save(item);}}>
-          <label>Correction <textarea value={content} onChange={event=>setContent(event.target.value)} maxLength={4000} required/></label>
-          <div className="row"><button type="submit" disabled={busy}>Save correction</button><button type="button" disabled={busy} onClick={()=>setEditing(null)}>Cancel</button></div>
-        </form>:<div className="row"><button type="button" onClick={()=>{setEditing(item.id);setContent(item.content);}}>Correct</button>
-          <button type="button" disabled={busy} onClick={()=>{void remove(item);}}>Delete</button>
-          <button type="button" onClick={()=>setSelected(selected===item.id?null:item.id)}>Sources</button></div>}
+    {error?<p className="callout callout-error" role="alert">{errorMessage(error)}</p>:null}
+    {actionError?<p className="callout callout-error" role="alert">{errorMessage(actionError)}</p>:null}
+    {loading?<div className="empty-state" aria-live="polite"><span className="loading-dot"/>Loading memories…</div>:error!==null&&items.length===0?null:items.length===0?<div className="empty-state"><strong>No memories found</strong><p>Try another search or start a voice conversation.</p></div>:
+      <ul className="cards memory-grid">{items.map(item=><li className="memory-card" key={item.id}>
+        <div className="card-header"><span className="type-pill" data-kind={item.kind}>{item.kind==="semantic"?"Fact":"Event"}</span>
+          <span className="card-subject">{item.subject}</span>{item.timeText?<span className="card-time">{item.timeText}</span>:null}</div>
+        <p className="memory-content">{item.content}</p>
+        {editing===item.id?<form className="inline-editor" onSubmit={event=>{event.preventDefault();void save(item);}}>
+          <label className="field"><span>Correction</span><textarea value={content} onChange={event=>setContent(event.target.value)} maxLength={4000} required/></label>
+          <div className="card-actions"><button className="primary-action" type="submit" disabled={busy}>Save correction</button><button className="secondary-action" type="button" disabled={busy} onClick={()=>setEditing(null)}>Cancel</button></div>
+        </form>:<div className="card-actions"><button className="secondary-action" type="button" onClick={()=>{setEditing(item.id);setContent(item.content);}}>Correct</button>
+          <button className="danger-action" type="button" disabled={busy} onClick={()=>{void remove(item);}}>Delete</button>
+          <button className="text-action" type="button" onClick={()=>setSelected(selected===item.id?null:item.id)}>Sources</button></div>}
         {selected===item.id?<Provenance type="memory" id={item.id} onClose={()=>setSelected(null)}/>:null}
       </li>)}</ul>}
-    {cursor!==null?<button type="button" disabled={moreLoading} onClick={()=>{void loadMore();}}>{moreLoading?"Loading…":"Load more"}</button>:null}
+    {cursor!==null?<div className="load-more"><button className="secondary-action" type="button" disabled={moreLoading} onClick={()=>{void loadMore();}}>{moreLoading?"Loading…":"Load more memories"}</button></div>:null}
   </section>;
 }

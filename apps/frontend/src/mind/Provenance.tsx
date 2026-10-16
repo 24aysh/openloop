@@ -12,14 +12,14 @@ export function Provenance({type,id,onClose}:{type:"memory"|"commitment";id:stri
     void api.provenance(type,id,controller.signal).then(setChanges).catch(reason=>{if(!controller.signal.aborted)setError(reason instanceof Error?reason.message:"request_failed");});
     return()=>controller.abort();
   },[type,id]);
-  return <section aria-label="Source history" className="detail">
-    <div className="row"><h3>Source history</h3><button type="button" onClick={onClose}>Close</button></div>
-    {error?<p role="alert">{errorMessage(error)}</p>:changes===null?<p>Loading source history…</p>:changes.length===0?<p>No changes recorded.</p>:
-      <ol>{changes.map(change=><li key={change.id}>
-        <strong>{change.operation}</strong> by {change.actor} · version {change.entityVersion} · {new Date(change.createdAt).toLocaleString()}
+  return <section aria-label="Source history" className="detail provenance-panel">
+    <div className="panel-heading"><div><span className="eyebrow">Audit trail</span><h3>Source history</h3></div><button className="text-action" type="button" onClick={onClose}>Close</button></div>
+    {error?<p className="callout callout-error" role="alert">{errorMessage(error)}</p>:changes===null?<div className="empty-state compact"><span className="loading-dot"/>Loading source history…</div>:changes.length===0?<p className="muted">No changes recorded.</p>:
+      <ol className="history-list">{changes.map(change=><li key={change.id}>
+        <div className="history-meta"><span className="type-pill">{change.operation}</span><span>by {change.actor}</span><span>version {change.entityVersion}</span><time>{new Date(change.createdAt).toLocaleString()}</time></div>
         {change.sources.length>0?<ul>{change.sources.map(source=><li key={`${source.itemId}:${source.contentIndex}`}>
-          Session {source.sessionId}, turn {source.itemOrdinal}: <q>{source.evidenceText}</q>
-        </li>)}</ul>:<p>No transcript source (manual change).</p>}
+          <span>Session {source.sessionId.slice(0,8)}, turn {source.itemOrdinal}</span><q>{source.evidenceText}</q>
+        </li>)}</ul>:<p className="muted">No transcript source (manual change).</p>}
       </li>)}</ol>}
   </section>;
 }
