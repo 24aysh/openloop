@@ -10,7 +10,8 @@
     "test:mind": "bun test apps/backend/tests/mind",
     "test:transcripts": "bun test apps/backend/tests/transcripts",
     "test:sessions": "bun test apps/backend/tests/sessions",
-    "test:voice": "bun test apps/frontend/tests/voice"
+    "test:voice": "bun test apps/frontend/tests/voice",
+    "test:reconciliation": "bun test apps/backend/tests/reconciliation"
   },
   "devDependencies": {
     "@types/bun": "1.3.14",
