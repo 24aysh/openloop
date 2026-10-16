@@ -1,6 +1,6 @@
 # Openloop
 
-This checkout implements layers 1 through 5 of the [MVP architecture](docs/mvp-architecture.md): PostgreSQL Mind storage, final-turn transcript ingestion and ordering, browser-to-Realtime WebRTC with a backend sideband, durable text-model reconciliation of memories and commitments, and backend commitment logging. The [layer 1](specs/layer-1-implementation.md), [layer 2](specs/layer-2-implementation.md), [layer 3](specs/layer-3-implementation.md), [layer 4](specs/layer-4-implementation.md), and [layer 5](specs/layer-5-implementation.md) specs define their acceptance gates.
+This checkout contains the six layers of the [MVP architecture](docs/mvp-architecture.md): PostgreSQL Mind storage, final-turn transcript ingestion and ordering, browser-to-Realtime WebRTC with a backend sideband, durable text-model reconciliation, backend commitment logging, and integrated browser views. Deterministic Layer 6 checks pass; the live OpenAI/microphone smoke test remains to be run in a configured local environment. The [layer 1](specs/layer-1-implementation.md), [layer 2](specs/layer-2-implementation.md), [layer 3](specs/layer-3-implementation.md), [layer 4](specs/layer-4-implementation.md), [layer 5](specs/layer-5-implementation.md), and [layer 6](specs/layer-6-implementation.md) specs define their acceptance gates.
 
 ## Local setup
 
@@ -27,6 +27,8 @@ bun run --cwd apps/frontend dev
 
 The frontend requests microphone access before creating a backend session. The microphone track remains disabled until WebRTC, the data channel, the backend sideband, and transcript capture are ready. Stop drains accepted final transcript events before closing the call. The backend stores final transcript events from its sideband only; the browser never submits transcript text.
 
+The browser has Voice, Mind, and Commitments views. Voice distinguishes a closed capture from pending or blocked Mind extraction, and shows incomplete/failed capture without claiming the speech was saved. The current session's ordered transcript and gaps can be inspected there. Mind lists searchable semantic and episodic records, supports version-checked correction/deletion, and shows source history. Commitments lists due meaning and priority, supports version-checked completion/dismissal, and shows source history. These views use the existing demo-user API; they do not feed memories into Realtime or send user-facing notifications.
+
 The backend polls durable reconciliation jobs every second. It extracts only from sealed, completed user turns, applies validated changes atomically, and keeps earlier failed jobs ahead of later jobs for the same user. A blocked job needs an explicit local operator decision:
 
 ```sh
@@ -38,6 +40,8 @@ Retry keeps the original transcript range and model versions. Skip advances the 
 
 The backend also checks open commitments every second. Once a resolved due time arrives, it records an ordered decision in `commitment_logs` and prints a JSON `commitment_due` line. The database records each schedule version once; a terminal line can repeat after a crash, so use its stable `logId` to identify duplicates. Terminal lines omit the private title. Completing or dismissing a commitment prevents future logs; a log already committed remains as history.
 
+On SIGINT/SIGTERM, readiness becomes false and new voice starts are rejected. Existing sessions can report draining while the backend waits up to ten seconds for accepted final turns; unfinished captures become incomplete. Background model requests are aborted and durable jobs are recovered on the next start. A forced process kill can lose sideband events that were never persisted.
+
 The sample `DATABASE_URL` points to `openloop_dev`; `TEST_DATABASE_URL` points to `openloop_layer1_test`. Treat the sample credentials as local only. Never put a real API key in the repository.
 
 ```sh
@@ -47,9 +51,11 @@ bun test apps/backend/tests/sessions
 bun test apps/backend/tests/reconciliation
 bun test apps/backend/tests/scheduling
 bun test apps/frontend/tests/voice
+bun test apps/frontend/tests/mind
+bun test apps/backend/tests/integration
 bun run --cwd apps/frontend build
 bun run check-types
 bun run lint
 ```
 
-The test helper refuses a URL without a database name containing `test` or one matching `DATABASE_URL`. Make targets `install`, `migrate`, `test`, `typecheck`, `lint`, and `dev` wrap these commands. `make test` runs the Postgres suites sequentially because they share the example test database. Automated tests use fake Realtime transports and need no API key or microphone. Use the browser shell for the manual two-turn Realtime acceptance check described in the layer 3 spec.
+The test helper refuses a URL without a database name containing `test` or one matching `DATABASE_URL`. Export `TEST_DATABASE_URL` from `.env.example` or your local test setup before running database tests. Make targets `install`, `migrate`, `test`, `typecheck`, `lint`, and `dev` wrap these commands. `make test` runs the Postgres suites sequentially because they share the example test database. Automated tests use fake Realtime transports and need no API key or microphone. Use the browser shell for the manual two-turn Realtime acceptance check described in the layer 6 spec; natural-language extraction quality and live account/model access are not established by deterministic tests.
