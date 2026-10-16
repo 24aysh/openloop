@@ -9,6 +9,8 @@ migrate:
 test:
 	bun run test:mind
 	bun run test:transcripts
+	bun run test:sessions
+	bun run test:voice
 
 typecheck:
 	bun run check-types
