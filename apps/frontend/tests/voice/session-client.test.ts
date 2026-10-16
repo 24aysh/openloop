@@ -33,6 +33,8 @@ class FakeEnvironment implements VoiceEnvironment {
   requests:string[]=[];clock=0;permissionError:Error|null=null;serverState:"connecting"|"active"|"draining"|"closed"|"incomplete"|"failed"="connecting";
   captureReady=true;activationStarted=false;activationRelease:(()=>void)|null=null;permissionRelease:(()=>void)|null=null;holdPermission=false;detachCalls=0;
   closeState:"closed"|"incomplete"|"failed"="closed";holdDrain=false;backlog=0;blocked=0;
+  heartbeatFailure:"network"|"service"|"proxy"|"invalid"|null=null;
+  heartbeatReleases:Array<()=>void>=[];
 
   async getUserMedia():Promise<MediaStreamLike>{
     if(this.permissionError!==null)throw this.permissionError;
@@ -50,7 +52,13 @@ class FakeEnvironment implements VoiceEnvironment {
       this.serverState="active";
       return response(status("active",true));
     }
-    if(path.endsWith("/heartbeat")) return response({...status(this.serverState,this.captureReady),reconciliationBacklog:this.backlog,blockedReconciliationJobs:this.blocked});
+    if(path.endsWith("/heartbeat")) {
+      if(this.heartbeatFailure==="network")throw new TypeError("fetch failed");
+      if(this.heartbeatFailure==="service")return response({error:{code:"service_unavailable",message:"Unavailable"}},503);
+      if(this.heartbeatFailure==="proxy")return response({error:{code:"proxy_unreachable",message:"Proxy failed"}},502);
+      if(this.heartbeatFailure==="invalid")return response({unexpected:true});
+      return response({...status(this.serverState,this.captureReady),reconciliationBacklog:this.backlog,blockedReconciliationJobs:this.blocked});
+    }
     if(path.endsWith("/close")){this.serverState="draining";return response(status("draining"),202);}
     if(path===`/api/sessions/${sessionId}`){
       if(this.serverState==="draining"&&!this.holdDrain)this.serverState=this.closeState;
@@ -63,7 +71,7 @@ class FakeEnvironment implements VoiceEnvironment {
     return new Promise((resolve,reject)=>{
       if(signal?.aborted){reject(new DOMException("Aborted","AbortError"));return;}
       signal?.addEventListener("abort",()=>reject(new DOMException("Aborted","AbortError")),{once:true});
-      void resolve;
+      this.heartbeatReleases.push(()=>{this.clock+=milliseconds;resolve();});
     });
   }
   randomUUID():string{return "00000000-0000-4000-8000-000000000456";}
@@ -147,5 +155,25 @@ describe("VoiceSessionClient",()=>{
     await waitFor(()=>environment.activationStarted);environment.activationRelease?.();await start;
     await client.refreshStatus();expect(client.state.status).toMatchObject({reconciliationBacklog:2,blockedReconciliationJobs:1});
     await client.stop();
+  });
+
+  test.each([
+    ["network","backend_unreachable"],
+    ["service","service_unavailable"],
+    ["proxy","proxy_unreachable"],
+    ["invalid","invalid_server_response"],
+  ] as const)("heartbeat %s failure reports %s after retries",async(failure,code)=>{
+    const environment=new FakeEnvironment();environment.heartbeatFailure=failure;
+    const client=new VoiceSessionClient(environment);const start=client.start();
+    await waitFor(()=>environment.activationStarted);environment.activationRelease?.();await start;
+    for(let attempt=0;attempt<3;attempt++){
+      await waitFor(()=>environment.heartbeatReleases.length>attempt);
+      environment.heartbeatReleases[attempt]?.();
+      await waitFor(()=>environment.requests.filter(request=>request.endsWith("/heartbeat")).length===attempt+1);
+    }
+    await waitFor(()=>client.state.phase==="uncertain");
+    expect(client.state.errorCode).toBe(code);
+    expect(environment.track.enabled).toBe(false);
+    expect(environment.track.stops).toBe(1);
   });
 });

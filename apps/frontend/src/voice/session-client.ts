@@ -43,7 +43,17 @@ function parseStatus(value:unknown):SessionStatus {const row=object(value);const
     reconciliationBacklog:row.reconciliationBacklog as number,blockedReconciliationJobs:row.blockedReconciliationJobs as number,
     transcriptGapCount:row.transcriptGapCount as number,closeReason:row.closeReason as string|null,errorCode:row.errorCode as string|null};}
 
-async function json(response:Response):Promise<unknown> {const body=await response.json();if(!response.ok){const error=object(body).error;const code=typeof error==="object"&&error!==null&&"code" in error&&typeof error.code==="string"?error.code:"request_failed";throw new Error(code);}return body;}
+async function json(response:Response):Promise<unknown> {
+  let body:unknown;
+  try{body=await response.json();}catch{throw new Error(response.ok?"invalid_server_response":response.status>=500?"service_unavailable":"request_failed");}
+  if(!response.ok){
+    const error=typeof body==="object"&&body!==null&&"error" in body?body.error:null;
+    const code=typeof error==="object"&&error!==null&&"code" in error&&typeof error.code==="string"?error.code:response.status>=500?"service_unavailable":"request_failed";
+    throw new Error(code);
+  }
+  return body;
+}
+const failureCode=(error:unknown):string=>error instanceof Error?error.message:"session_failed";
 
 export class VoiceSessionClient {
   private snapshot:VoiceSnapshot={phase:"idle",sessionId:null,errorCode:null,status:null};
@@ -56,6 +66,10 @@ export class VoiceSessionClient {
   subscribe(listener:(state:VoiceSnapshot)=>void):()=>void {this.listeners.add(listener);listener(this.snapshot);return()=>this.listeners.delete(listener);}
   private emit(phase:VoicePhase,errorCode:string|null=null,status:SessionStatus|null=this.snapshot.status):void {
     this.snapshot={phase,sessionId:this.sessionId,errorCode,status};for(const listener of this.listeners) listener(this.snapshot);
+  }
+  private async request(path:string,init?:RequestInit):Promise<Response> {
+    try{return await this.environment.request(path,init);}
+    catch(error){if(init?.signal?.aborted)throw error;throw new Error("backend_unreachable");}
   }
 
   start():Promise<void> {
@@ -87,7 +101,7 @@ export class VoiceSessionClient {
       if(typeof offer.sdp!=="string"||offer.sdp.length===0) throw new Error("invalid_local_offer");
       await peer.setLocalDescription(offer);
       lifecycle.signal.throwIfAborted();
-      const response=await this.environment.request("/api/sessions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({startRequestId:this.environment.randomUUID(),sdpOffer:offer.sdp,timezone:this.environment.timezone()}),signal:this.lifecycle.signal});
+      const response=await this.request("/api/sessions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({startRequestId:this.environment.randomUUID(),sdpOffer:offer.sdp,timezone:this.environment.timezone()}),signal:this.lifecycle.signal});
       const started=parseStart(await json(response));this.sessionId=started.sessionId;this.emit("waiting_for_capture");
       await peer.setRemoteDescription({type:"answer",sdp:started.sdpAnswer});
       lifecycle.signal.throwIfAborted();
@@ -99,7 +113,7 @@ export class VoiceSessionClient {
         if(this.environment.now()>=deadline) throw new Error("setup_timeout");
         await this.environment.delay(500,this.lifecycle.signal);
       }
-      const active=parseStatus(await json(await this.environment.request(`/api/sessions/${this.sessionId}/activate`,{method:"POST",signal:this.lifecycle.signal})));
+      const active=parseStatus(await json(await this.request(`/api/sessions/${this.sessionId}/activate`,{method:"POST",signal:this.lifecycle.signal})));
       lifecycle.signal.throwIfAborted();
       if(active.state!=="active") throw new Error("session_not_ready");
       track.enabled=true;this.emit("active",null,active);this.startHeartbeat();
@@ -107,21 +121,21 @@ export class VoiceSessionClient {
       const cancelled=this.stopping || lifecycle.signal.aborted;
       this.disableMicrophone();this.cleanupLocal();
       if(cancelled) return;
-      if(this.snapshot.phase!=="incomplete"&&this.snapshot.phase!=="failed") this.emit("error",error instanceof Error?error.message:"session_failed");
+      if(this.snapshot.phase!=="incomplete"&&this.snapshot.phase!=="failed") this.emit("error",failureCode(error));
       throw error;
     }
   }
 
-  private async getStatus():Promise<SessionStatus> {if(this.sessionId===null) throw new Error("session_missing");return parseStatus(await json(await this.environment.request(`/api/sessions/${this.sessionId}`,{signal:this.lifecycle?.signal})));}
+  private async getStatus():Promise<SessionStatus> {if(this.sessionId===null) throw new Error("session_missing");return parseStatus(await json(await this.request(`/api/sessions/${this.sessionId}`,{signal:this.lifecycle?.signal})));}
   private startHeartbeat():void {
     this.heartbeat=new AbortController();const signal=this.heartbeat.signal;
     void (async()=>{let failures=0;while(!signal.aborted){
-      try {await this.environment.delay(5000,signal);if(signal.aborted) return;const status=parseStatus(await json(await this.environment.request(`/api/sessions/${this.sessionId}/heartbeat`,{method:"POST",signal})));
+      try {await this.environment.delay(5000,signal);if(signal.aborted) return;const status=parseStatus(await json(await this.request(`/api/sessions/${this.sessionId}/heartbeat`,{method:"POST",signal})));
         failures=0;if(status.state==="draining"||terminal(status.state)){
           this.disableMicrophone();this.cleanupLocal();this.emit(status.state,status.errorCode,status);return;
         }
         this.emit("active",status.errorCode,status);}
-      catch{if(signal.aborted)return;failures++;if(failures>=3){this.disableMicrophone();this.cleanupLocal();this.emit("uncertain","backend_unreachable");return;}}
+      catch(error){if(signal.aborted)return;failures++;if(failures>=3){this.disableMicrophone();this.cleanupLocal();this.emit("uncertain",failureCode(error));return;}}
     }})();
   }
 
@@ -135,22 +149,22 @@ export class VoiceSessionClient {
     const id=this.sessionId;
     if(id===null){this.lifecycle?.abort();this.cleanupLocal();this.emit("closed");return;}
     try {
-      let status=parseStatus(await json(await this.environment.request(`/api/sessions/${id}/close`,{method:"POST"})));
+      let status=parseStatus(await json(await this.request(`/api/sessions/${id}/close`,{method:"POST"})));
       const deadline=this.environment.now()+12_000;
-      while(!terminal(status.state)&&this.environment.now()<deadline){await this.environment.delay(500);status=parseStatus(await json(await this.environment.request(`/api/sessions/${id}`)));}
+      while(!terminal(status.state)&&this.environment.now()<deadline){await this.environment.delay(500);status=parseStatus(await json(await this.request(`/api/sessions/${id}`)));}
       this.cleanupLocal();this.emit(terminal(status.state)?status.state:"uncertain",status.errorCode??(terminal(status.state)?null:"close_pending"),status);
-    } catch(error){this.cleanupLocal();this.emit("uncertain",error instanceof Error?error.message:"close_failed");throw error;}
+    } catch(error){this.cleanupLocal();this.emit("uncertain",failureCode(error));throw error;}
   }
   async refreshStatus():Promise<void> {
     const id=this.sessionId;if(id===null) return;
     this.statusCheck?.abort();const controller=new AbortController();this.statusCheck=controller;
     try {
-      const status=parseStatus(await json(await this.environment.request(`/api/sessions/${id}`,{signal:controller.signal})));
+      const status=parseStatus(await json(await this.request(`/api/sessions/${id}`,{signal:controller.signal})));
       if(controller.signal.aborted||this.sessionId!==id)return;
       if(status.state==="draining"||terminal(status.state)) this.disableMicrophone();
       const phase=terminal(status.state)?status.state:status.state==="draining"?"draining":this.snapshot.phase;
       this.emit(phase,status.errorCode,status);
-    } catch(error){if(!controller.signal.aborted&&this.sessionId===id)this.emit("uncertain",error instanceof Error?error.message:"backend_unreachable");}
+    } catch(error){if(!controller.signal.aborted&&this.sessionId===id)this.emit("uncertain",failureCode(error));}
     finally{if(this.statusCheck===controller)this.statusCheck=null;}
   }
   dispose():void {
