@@ -94,6 +94,7 @@ export class MindWriter implements MindWriterContract {
       if (!found.rows[0]) throw new DomainError("not_found","Commitment not found");
       const previous=commitmentFromRow(found.rows[0]);
       if (previous.version!==edit.expectedVersion) throw new DomainError("version_conflict","Commitment version changed",{currentVersion:previous.version});
+      if (previous.status==="deleted") throw new DomainError("invalid_input","Deleted commitment cannot be edited");
       const releaseOnly=edit.releaseManualOverride===true && Object.keys(edit).length===2;
       if (releaseOnly && !previous.manualOverride) throw new DomainError("invalid_input","Commitment has no override to release");
       const status=edit.status??previous.status;
@@ -112,8 +113,29 @@ export class MindWriter implements MindWriterContract {
         version=$11,schedule_version=$12,manual_override=$13,completed_at=$14,dismissed_at=$15,updated_at=now()
         WHERE user_id=$1 AND id=$2 RETURNING ${COMMITMENT_COLUMNS}`,[scope.userId,id,next.title,next.subject,next.status,next.priority,next.dueAt,next.dueTimezone,next.dueText,next.duePrecision,next.version,next.scheduleVersion,next.manualOverride,next.completedAt,next.dismissedAt]);
       const record=commitmentFromRow(updated.rows[0] ?? {});
+      if (scheduleChanged || status!=="open") await client.query("UPDATE commitment_logs SET canceled_at=now() WHERE user_id=$1 AND commitment_id=$2 AND emitted_at IS NULL AND canceled_at IS NULL",[scope.userId,id]);
       const operation=releaseOnly?"release_override":status!==previous.status ? status==="completed"?"complete":status==="dismissed"?"dismiss":"reopen":"update";
       await addChange(client,{userId:scope.userId,commitmentId:id,version:record.version,operation,actor:"user",afterState:record});
+      await advanceMindState(client,scope.userId);
+      return record;
+    });
+  }
+
+  async deleteCommitment(scope:UserScope,id:UUID,input:Versioned):Promise<Commitment> {
+    userScopeSchema.parse(scope);uuidSchema.parse(id);const guard=validate(versionedSchema,input);
+    return withTransaction(this.pool,{isolation:"read committed"},async client=>{
+      await lockMindState(client,scope.userId);
+      const found=await client.query(`SELECT ${COMMITMENT_COLUMNS} FROM commitments WHERE user_id=$1 AND id=$2 FOR UPDATE`,[scope.userId,id]);
+      if (!found.rows[0]) throw new DomainError("not_found","Commitment not found");
+      const previous=commitmentFromRow(found.rows[0]);
+      if (previous.version!==guard.expectedVersion) throw new DomainError("version_conflict","Commitment version changed",{currentVersion:previous.version});
+      if (previous.status==="deleted") throw new DomainError("invalid_input","Commitment already deleted");
+      const updated=await client.query(`UPDATE commitments SET status='deleted',version=$3,schedule_version=$4,manual_override=true,
+        completed_at=NULL,dismissed_at=NULL,updated_at=now() WHERE user_id=$1 AND id=$2 RETURNING ${COMMITMENT_COLUMNS}`,
+      [scope.userId,id,nextCounter(previous.version),nextCounter(previous.scheduleVersion)]);
+      const record=commitmentFromRow(updated.rows[0] ?? {});
+      await client.query("UPDATE commitment_logs SET canceled_at=now() WHERE user_id=$1 AND commitment_id=$2 AND emitted_at IS NULL AND canceled_at IS NULL",[scope.userId,id]);
+      await addChange(client,{userId:scope.userId,commitmentId:id,version:record.version,operation:"delete",actor:"user",afterState:record});
       await advanceMindState(client,scope.userId);
       return record;
     });

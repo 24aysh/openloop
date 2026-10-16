@@ -1,6 +1,6 @@
 export type Memory=Readonly<{id:string;kind:"semantic"|"episodic";subject:string;predicate:string;content:string;
   occurredAt:string|null;timeText:string|null;version:string}>;
-export type Commitment=Readonly<{id:string;title:string;subject:string|null;status:"open"|"completed"|"dismissed";
+export type Commitment=Readonly<{id:string;title:string;subject:string|null;status:"open"|"completed"|"dismissed"|"deleted";
   priority:1|2|3;dueAt:string|null;dueTimezone:string|null;dueText:string|null;duePrecision:"instant"|"date"|"unresolved"|"none";
   version:string;loggedAt:string|null}>;
 export type Page<T>=Readonly<{items:readonly T[];nextCursor:string|null}>;
@@ -31,7 +31,7 @@ function memory(value:unknown):Memory {
 function commitment(value:unknown):Commitment {
   const row=record(value);const priority=integer(row.priority);
   if(priority!==1&&priority!==2&&priority!==3)throw new ApiError("invalid_server_response");
-  return {id:string(row.id),title:string(row.title),subject:optionalString(row.subject),status:choice(row.status,["open","completed","dismissed"]),
+  return {id:string(row.id),title:string(row.title),subject:optionalString(row.subject),status:choice(row.status,["open","completed","dismissed","deleted"]),
     priority,dueAt:optionalString(row.dueAt),dueTimezone:optionalString(row.dueTimezone),dueText:optionalString(row.dueText),
     duePrecision:choice(row.duePrecision,["instant","date","unresolved","none"]),version:string(row.version),
     loggedAt:row.loggedAt===undefined?null:optionalString(row.loggedAt)};
@@ -73,7 +73,7 @@ export class MindApi {
     const query=new URLSearchParams({limit:"50"});if(filters.text)query.set("text",filters.text);if(filters.kind)query.set("kind",filters.kind);if(cursor)query.set("cursor",cursor);
     return page(await this.send(`/api/mind/memories?${query}`,signal),memory);
   }
-  async commitments(status:"all"|Commitment["status"],cursor:string|null,signal?:AbortSignal):Promise<Page<Commitment>>{
+  async commitments(status:"all"|Exclude<Commitment["status"],"deleted">,cursor:string|null,signal?:AbortSignal):Promise<Page<Commitment>>{
     const query=new URLSearchParams({limit:"50"});if(status!=="all")query.set("status",status);if(cursor)query.set("cursor",cursor);
     return page(await this.send(`/api/commitments?${query}`,signal),commitment);
   }
@@ -92,8 +92,12 @@ export class MindApi {
     return memory(await this.send(`/api/mind/memories/${encodeURIComponent(item.id)}`,signal,{method:"DELETE",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({expectedVersion:item.version})}));
   }
-  async setCommitmentStatus(item:Commitment,status:Commitment["status"],signal?:AbortSignal):Promise<Commitment>{
+  async setCommitmentStatus(item:Commitment,status:Exclude<Commitment["status"],"deleted">,signal?:AbortSignal):Promise<Commitment>{
     return commitment(await this.send(`/api/commitments/${encodeURIComponent(item.id)}`,signal,{method:"PATCH",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({expectedVersion:item.version,status})}));
+  }
+  async deleteCommitment(item:Commitment,signal?:AbortSignal):Promise<Commitment>{
+    return commitment(await this.send(`/api/commitments/${encodeURIComponent(item.id)}`,signal,{method:"DELETE",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({expectedVersion:item.version})}));
   }
 }

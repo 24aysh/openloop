@@ -44,7 +44,7 @@ export class MindReader implements MindReaderContract {
     const result = await this.pool.query(`SELECT ${COMMITMENT_COLUMNS},
       (SELECT emitted_at FROM commitment_logs logs WHERE logs.user_id=commitments.user_id AND logs.commitment_id=commitments.id
         AND logs.schedule_version=commitments.schedule_version) AS logged_at
-      FROM commitments WHERE user_id=$1
+      FROM commitments WHERE user_id=$1 AND status<>'deleted'
       AND ($2::text IS NULL OR status=$2) AND ($3::smallint IS NULL OR priority=$3)
       AND ($4::timestamptz IS NULL OR (due_at IS NOT NULL AND due_at <= $4))
       AND ($5::smallint IS NULL OR priority > $5 OR (priority=$5 AND

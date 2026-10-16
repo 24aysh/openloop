@@ -34,5 +34,6 @@ export function createMindRouter(reader:MindReader,writer:MindWriter,scopeForReq
   router.patch("/api/mind/memories/:id",async(req,res)=>{res.json(await writer.editMemory(scopeForRequest(req),routeId(req,"id"),memoryEditSchema.parse(req.body)));});
   router.delete("/api/mind/memories/:id",async(req,res)=>{res.json(await writer.deleteMemory(scopeForRequest(req),routeId(req,"id"),versionedSchema.parse(req.body)));});
   router.patch("/api/commitments/:id",async(req,res)=>{res.json(await writer.editCommitment(scopeForRequest(req),routeId(req,"id"),commitmentEditSchema.parse(req.body)));});
+  router.delete("/api/commitments/:id",async(req,res)=>{res.json(await writer.deleteCommitment(scopeForRequest(req),routeId(req,"id"),versionedSchema.parse(req.body)));});
   return router;
 }

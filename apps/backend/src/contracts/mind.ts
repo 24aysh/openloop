@@ -21,5 +21,6 @@ export interface MindWriterContract {
   editMemory(scope:UserScope,id:UUID,edit:MemoryEdit):Promise<Memory>;
   deleteMemory(scope:UserScope,id:UUID,guard:{expectedVersion:Counter}):Promise<Memory>;
   editCommitment(scope:UserScope,id:UUID,edit:CommitmentEdit):Promise<Commitment>;
+  deleteCommitment(scope:UserScope,id:UUID,guard:{expectedVersion:Counter}):Promise<Commitment>;
   applyExtraction(claim:JobClaim,changes:ValidatedChangeSet):Promise<ApplyResult>;
 }

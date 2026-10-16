@@ -52,4 +52,11 @@ describe("MindApi boundary",()=>{
     const api=new MindApi(async()=>reply({items:[{...commitment,loggedAt}],nextCursor:null}));
     expect((await api.commitments("all",null)).items[0]?.loggedAt).toBe(loggedAt);
   });
+  test("sends a versioned delete request for a commitment",async()=>{
+    let request:RequestInit|undefined;
+    const api=new MindApi(async(_path,init)=>{request=init;return reply({...commitment,status:"deleted",version:"3"});});
+    expect((await api.deleteCommitment(commitment)).status).toBe("deleted");
+    expect(request?.method).toBe("DELETE");
+    expect(JSON.parse(String(request?.body))).toEqual({expectedVersion:"2"});
+  });
 });
