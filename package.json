@@ -7,7 +7,8 @@
     "db:migrate": "bun apps/backend/scripts/migrate.ts",
     "check-types": "tsc --noEmit -p apps/backend/tsconfig.json",
     "lint": "oxlint apps/backend/src apps/backend/scripts apps/backend/tests --deny-warnings",
-    "test:mind": "bun test apps/backend/tests/mind"
+    "test:mind": "bun test apps/backend/tests/mind",
+    "test:transcripts": "bun test apps/backend/tests/transcripts"
   },
   "devDependencies": {
     "@types/bun": "1.3.14",

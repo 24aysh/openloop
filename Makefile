@@ -8,6 +8,7 @@ migrate:
 
 test:
 	bun run test:mind
+	bun run test:transcripts
 
 typecheck:
 	bun run check-types

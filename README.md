@@ -1,6 +1,6 @@
 # Openloop
 
-This checkout currently implements layer 1 of the [MVP architecture](docs/mvp-architecture.md): PostgreSQL storage, Mind contracts and repositories, versioned edits, extraction-apply transactions, and local Mind HTTP routes. The [implementation spec](specs/layer-1-implementation.md) defines its acceptance gate. Voice capture, reconciliation workers, and scheduling workers are later layers.
+This checkout implements layers 1 and 2 of the [MVP architecture](docs/mvp-architecture.md): PostgreSQL storage, Mind contracts and repositories, versioned edits, local Mind HTTP routes, final-turn transcript ingestion, conversation ordering, and durable reconciliation batches. The [layer 1](specs/layer-1-implementation.md) and [layer 2](specs/layer-2-implementation.md) specs define their acceptance gates. Real sideband/WebRTC attachment, reconciliation workers, and scheduling workers are later layers.
 
 ## Local setup
 
@@ -21,8 +21,9 @@ The sample `DATABASE_URL` points to `openloop_dev`; `TEST_DATABASE_URL` points t
 
 ```sh
 bun test apps/backend/tests/mind
+bun test apps/backend/tests/transcripts
 bun run check-types
 bun run lint
 ```
 
-The test helper refuses a URL without a database name containing `test` or one matching `DATABASE_URL`. Make targets `install`, `migrate`, `test`, `typecheck`, `lint`, and `dev` wrap these commands.
+The test helper refuses a URL without a database name containing `test` or one matching `DATABASE_URL`. Make targets `install`, `migrate`, `test`, `typecheck`, `lint`, and `dev` wrap these commands. `make test` runs the two Postgres suites sequentially because they share the example test database. Layer 2 accepts synthetic server events directly; the real OpenAI sideband is attached in layer 3.
