@@ -29,6 +29,8 @@ The frontend requests microphone access before creating a backend session. The m
 
 The browser has Voice, Mind, and Commitments views. Voice distinguishes a closed capture from pending or blocked Mind extraction, and shows incomplete/failed capture without claiming the speech was saved. The current session's ordered transcript and gaps can be inspected there. Mind lists searchable semantic and episodic records, supports version-checked correction/deletion, and shows source history. Commitments lists due meaning and priority, supports version-checked completion/dismissal, and shows source history. These views use the existing demo-user API; they do not feed memories into Realtime or send user-facing notifications.
 
+For a live browser walkthrough and SQL checks against transcripts, Mind changes, and due logs, follow the [manual testing guide](docs/manual-testing.md).
+
 The backend polls durable reconciliation jobs every second. It extracts only from sealed, completed user turns, applies validated changes atomically, and keeps earlier failed jobs ahead of later jobs for the same user. A blocked job needs an explicit local operator decision:
 
 ```sh
