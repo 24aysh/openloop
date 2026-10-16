@@ -7,6 +7,7 @@ import { createMindRouter } from "./http/mind-routes";
 import { errorResponse } from "./http/error-response";
 import { OpenAIRealtimeGateway, REALTIME_INSTRUCTIONS, SessionController, SessionRepository, createSessionRouter, startSessionSupervisor } from "./sessions";
 import { startTranscriptScanLoop, TranscriptIngestor } from "./transcripts";
+import { OpenAITextExtractor, ReconciliationRepository, ReconciliationWorker, startReconciliationLoop } from "./reconciliation";
 
 const config=readConfig();
 const pool=createPool(config.DATABASE_URL);
@@ -33,13 +34,14 @@ const server=app.listen(config.PORT,"127.0.0.1");
 const backgroundError=()=>{backgroundHealthy=false;process.exitCode=1;void shutdown();};
 const transcriptScan=startTranscriptScanLoop(ingestor,backgroundError);
 const sessionSupervisor=startSessionSupervisor(sessions,backgroundError);
+const reconciliationScan=startReconciliationLoop(new ReconciliationWorker(new ReconciliationRepository(pool),new OpenAITextExtractor(config.OPENAI_API_KEY),new MindWriter(pool)),backgroundError);
 async function shutdown():Promise<void> {
   if(shuttingDown) return;shuttingDown=true;
   await new Promise<void>(resolve=>{
     const force=setTimeout(()=>{server.closeAllConnections();resolve();},5000);
     server.close(()=>{clearTimeout(force);resolve();});
   });
-  await Promise.allSettled([sessionSupervisor.stop(),transcriptScan.stop()]);
+  await Promise.allSettled([sessionSupervisor.stop(),transcriptScan.stop(),reconciliationScan.stop()]);
   await sessions.shutdown();
   await pool.end();
 }
