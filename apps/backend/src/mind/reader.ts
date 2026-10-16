@@ -41,7 +41,10 @@ export class MindReader implements MindReaderContract {
     const normalized = { status: filters.status ?? null, priority: filters.priority ?? null, dueBefore: filters.dueBefore ?? null };
     const fingerprint = filterFingerprint(normalized); const cursor = decodeCursor(page.cursor,"commitments",fingerprint);
     if (cursor && cursor.kind !== "commitments") throw new DomainError("invalid_input","Invalid pagination cursor");
-    const result = await this.pool.query(`SELECT ${COMMITMENT_COLUMNS} FROM commitments WHERE user_id=$1
+    const result = await this.pool.query(`SELECT ${COMMITMENT_COLUMNS},
+      (SELECT emitted_at FROM commitment_logs logs WHERE logs.user_id=commitments.user_id AND logs.commitment_id=commitments.id
+        AND logs.schedule_version=commitments.schedule_version) AS logged_at
+      FROM commitments WHERE user_id=$1
       AND ($2::text IS NULL OR status=$2) AND ($3::smallint IS NULL OR priority=$3)
       AND ($4::timestamptz IS NULL OR (due_at IS NOT NULL AND due_at <= $4))
       AND ($5::smallint IS NULL OR priority > $5 OR (priority=$5 AND
@@ -50,7 +53,7 @@ export class MindReader implements MindReaderContract {
           OR ($6::timestamptz IS NOT NULL AND due_at IS NULL))))
       ORDER BY priority ASC,due_at ASC NULLS LAST,id ASC LIMIT $8`,
       [scope.userId,normalized.status,normalized.priority,normalized.dueBefore,cursor?.kind === "commitments" ? cursor.priority : null,cursor?.kind === "commitments" ? cursor.dueAt : null,cursor?.kind === "commitments" ? cursor.id : null,page.limit+1]);
-    const records = result.rows.map(commitmentFromRow); const items = records.slice(0,page.limit); const last = items.at(-1);
+    const records = result.rows.map(row=>({...commitmentFromRow(row),loggedAt:row.logged_at===null?null:databaseTimestampSchema.parse(row.logged_at)})); const items = records.slice(0,page.limit); const last = items.at(-1);
     return { items, nextCursor: records.length > page.limit && last ? encodeCursor({v:1,kind:"commitments",filter:fingerprint,priority:last.priority,dueAt:last.dueAt,id:last.id}) : null };
   }
 

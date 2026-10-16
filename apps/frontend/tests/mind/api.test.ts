@@ -4,7 +4,7 @@ import { ApiError, MindApi, type Commitment, type Memory } from "../../src/mind/
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"Content-Type":"application/json"}});
 const memory:Memory={id:"memory-1",kind:"semantic",subject:"Ananya",predicate:"likes",content:"Science fiction",occurredAt:null,timeText:null,version:"1"};
 const commitment:Commitment={id:"commitment-1",title:"Send presentation",subject:"Ananya",status:"open",priority:1,dueAt:null,dueTimezone:null,
-  dueText:"tomorrow",duePrecision:"unresolved",version:"2"};
+  dueText:"tomorrow",duePrecision:"unresolved",version:"2",loggedAt:null};
 
 describe("MindApi boundary",()=>{
   test("invokes the default browser transport without rebinding native fetch",async()=>{
@@ -45,5 +45,11 @@ describe("MindApi boundary",()=>{
     expect((await api.provenance("commitment","commitment-1"))[0]?.sources[0]?.evidenceText).toBe("I sent it");
     expect((await api.setCommitmentStatus(commitment,"completed")).version).toBe("3");
     expect(JSON.parse(String(writes[0]?.body))).toEqual({expectedVersion:"2",status:"completed"});
+  });
+
+  test("parses the backend log time for a commitment",async()=>{
+    const loggedAt="2026-10-16T21:55:00.119Z";
+    const api=new MindApi(async()=>reply({items:[{...commitment,loggedAt}],nextCursor:null}));
+    expect((await api.commitments("all",null)).items[0]?.loggedAt).toBe(loggedAt);
   });
 });

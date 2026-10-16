@@ -9,6 +9,11 @@ function due(item:Commitment):string{
   try{return `${new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeStyle:"short",timeZone:item.dueTimezone??undefined}).format(new Date(item.dueAt))}${item.dueTimezone?` (${item.dueTimezone})`:""}`;}
   catch{return item.dueText??item.dueAt;}
 }
+function logged(item:Commitment):string|null{
+  if(item.loggedAt===null)return null;
+  try{return new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeStyle:"short",timeZone:item.dueTimezone??undefined}).format(new Date(item.loggedAt));}
+  catch{return item.loggedAt;}
+}
 export function CommitmentsView(){
   const [status,setStatus]=useState<"all"|Commitment["status"]>("all");const [revision,setRevision]=useState(0);
   const [items,setItems]=useState<readonly Commitment[]>([]);const [cursor,setCursor]=useState<string|null>(null);
@@ -17,9 +22,10 @@ export function CommitmentsView(){
   const [selected,setSelected]=useState<string|null>(null);const [busy,setBusy]=useState(false);
   const ongoing=useRef<AbortController|null>(null);const action=useRef<AbortController|null>(null);
   useEffect(()=>()=>action.current?.abort(),[]);
+  useEffect(()=>{const timer=setInterval(()=>setRevision(value=>value+1),2000);return()=>clearInterval(timer);},[]);
   useEffect(()=>{
     ongoing.current?.abort();const controller=new AbortController();ongoing.current=controller;
-    setLoading(true);setMoreLoading(false);setItems([]);setCursor(null);setError(null);
+    setLoading(true);setMoreLoading(false);setCursor(null);setError(null);
     void api.commitments(status,null,controller.signal).then(page=>{if(!controller.signal.aborted){setItems(page.items);setCursor(page.nextCursor);}})
       .catch(reason=>{if(!controller.signal.aborted)setError(reason instanceof Error?reason.message:"request_failed");})
       .finally(()=>{if(!controller.signal.aborted)setLoading(false);});
@@ -43,9 +49,10 @@ export function CommitmentsView(){
     </select></label><button type="button" onClick={()=>setRevision(value=>value+1)}>Refresh</button></div>
     {error?<p role="alert">{errorMessage(error)}</p>:null}
     {actionError?<p role="alert">{errorMessage(actionError)}</p>:null}
-    {loading?<p>Loading commitments…</p>:error!==null&&items.length===0?null:items.length===0?<p>No commitments found.</p>:
+    {loading&&items.length===0?<p>Loading commitments…</p>:error!==null&&items.length===0?null:items.length===0?<p>No commitments found.</p>:
       <ul className="cards">{items.map(item=><li key={item.id}>
         <strong>{item.title}</strong><p>{item.status} · priority {item.priority} · {due(item)}</p>
+        {logged(item)?<p><strong>Logged by backend:</strong> {logged(item)}</p>:null}
         <div className="row">{item.status==="open"?<><button type="button" disabled={busy} onClick={()=>{void update(item,"completed");}}>Mark completed</button>
           <button type="button" disabled={busy} onClick={()=>{void update(item,"dismissed");}}>Dismiss</button></>:null}
           <button type="button" onClick={()=>setSelected(selected===item.id?null:item.id)}>Sources</button></div>

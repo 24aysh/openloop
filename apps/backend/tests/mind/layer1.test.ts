@@ -116,6 +116,14 @@ describe("Mind reads and manual edits",()=>{
     const third=await reader.listCommitments({userId},{limit:1,cursor:second.nextCursor});
     expect([first,second,third].flatMap(page=>page.items.map(item=>item.id))).toEqual([c.id,...[a.id,b.id].sort()]);
   });
+  test("commitment reads expose an emitted log only for the current schedule",async()=>{
+    await seedUser(pool);const commitment=await seedCommitment(pool,undefined,userId,"2026-10-17T03:25:00Z");
+    await pool.query(`INSERT INTO commitment_logs(id,user_id,commitment_id,schedule_version,commitment_version,due_at,eligible_at,priority,title_snapshot,batch_id,batch_position,emitted_at)
+      VALUES($1,$2,$3,1,1,$4,$4,2,$5,$6,1,$4)`,[crypto.randomUUID(),userId,commitment.id,commitment.dueAt,commitment.title,crypto.randomUUID()]);
+    expect((await reader.listCommitments({userId},page)).items[0]?.loggedAt).toBe(commitment.dueAt);
+    await writer.editCommitment({userId},commitment.id,{expectedVersion:commitment.version,dueAt:timestampSchema.parse("2026-10-17T03:30:00Z")});
+    expect((await reader.listCommitments({userId},page)).items[0]?.loggedAt).toBeNull();
+  });
   test("transcript page uses ordinals and reports unplaced items as gaps",async()=>{
     await seedUser(pool);await seedRunningJob(pool);
     await pool.query("INSERT INTO transcript_items(id,user_id,session_id,provider_item_id,role,state,first_seen_at) VALUES($1,$2,$3,'later','user','pending',now()-interval '1 hour')",[crypto.randomUUID(),userId,sessionId]);

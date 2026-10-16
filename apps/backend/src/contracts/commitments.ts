@@ -32,4 +32,5 @@ export const commitmentEditSchema = z.strictObject({
 export type CommitmentEdit = z.infer<typeof commitmentEditSchema>;
 export const commitmentQuerySchema = z.strictObject({ status: commitmentStatusSchema.optional(), priority: prioritySchema.optional(), dueBefore: timestampSchema.optional() });
 export type CommitmentQuery = z.infer<typeof commitmentQuerySchema>;
-export type CommitmentPage = Readonly<{ items: readonly Commitment[]; nextCursor: z.infer<typeof cursorSchema> | null }>;
+export type CommitmentListItem = Commitment & Readonly<{ loggedAt: z.infer<typeof timestampSchema> | null }>;
+export type CommitmentPage = Readonly<{ items: readonly CommitmentListItem[]; nextCursor: z.infer<typeof cursorSchema> | null }>;

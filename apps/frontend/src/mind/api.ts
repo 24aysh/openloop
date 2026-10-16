@@ -1,7 +1,8 @@
 export type Memory=Readonly<{id:string;kind:"semantic"|"episodic";subject:string;predicate:string;content:string;
   occurredAt:string|null;timeText:string|null;version:string}>;
 export type Commitment=Readonly<{id:string;title:string;subject:string|null;status:"open"|"completed"|"dismissed";
-  priority:1|2|3;dueAt:string|null;dueTimezone:string|null;dueText:string|null;duePrecision:"instant"|"date"|"unresolved"|"none";version:string}>;
+  priority:1|2|3;dueAt:string|null;dueTimezone:string|null;dueText:string|null;duePrecision:"instant"|"date"|"unresolved"|"none";
+  version:string;loggedAt:string|null}>;
 export type Page<T>=Readonly<{items:readonly T[];nextCursor:string|null}>;
 export type Source=Readonly<{sessionId:string;itemId:string;itemOrdinal:number;contentIndex:number;evidenceText:string}>;
 export type Change=Readonly<{id:string;entityVersion:string;operation:string;actor:"reconciler"|"user";createdAt:string;sources:readonly Source[]}>;
@@ -32,7 +33,8 @@ function commitment(value:unknown):Commitment {
   if(priority!==1&&priority!==2&&priority!==3)throw new ApiError("invalid_server_response");
   return {id:string(row.id),title:string(row.title),subject:optionalString(row.subject),status:choice(row.status,["open","completed","dismissed"]),
     priority,dueAt:optionalString(row.dueAt),dueTimezone:optionalString(row.dueTimezone),dueText:optionalString(row.dueText),
-    duePrecision:choice(row.duePrecision,["instant","date","unresolved","none"]),version:string(row.version)};
+    duePrecision:choice(row.duePrecision,["instant","date","unresolved","none"]),version:string(row.version),
+    loggedAt:row.loggedAt===undefined?null:optionalString(row.loggedAt)};
 }
 function page<T>(value:unknown,parse:(item:unknown)=>T):Page<T>{
   const row=record(value);if(!Array.isArray(row.items))throw new ApiError("invalid_server_response");
