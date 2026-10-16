@@ -10,6 +10,8 @@ import { startTranscriptScanLoop, TranscriptIngestor } from "./transcripts";
 import { OpenAITextExtractor, ReconciliationRepository, ReconciliationWorker, startReconciliationLoop } from "./reconciliation";
 import { CommitmentLogEmitter, CommitmentScheduler, startSchedulingLoop, StdoutTerminalSink } from "./scheduling";
 import { logOperational, safeErrorCode } from "./operational-log";
+import { NotificationFeed } from "./notifications/feed";
+import { createNotificationRouter } from "./notifications/routes";
 
 const config=readConfig();
 const pool=createPool(config.DATABASE_URL);
@@ -29,6 +31,8 @@ let shuttingDown=false;let backgroundHealthy=true;
 app.use(createSessionRouter(sessions,()=>scope,()=>!shuttingDown));
 app.use(express.json({limit:"32kb",strict:true}));
 app.use(createMindRouter(new MindReader(pool),new MindWriter(pool),()=>scope));
+const notificationStreams=new Set<()=>void>();
+app.use(createNotificationRouter(new NotificationFeed(pool),()=>scope,notificationStreams));
 app.get("/health/live",(_request,response)=>response.json({ok:true}));
 app.get("/health/ready",async(_request,response)=>{try{if(!backgroundHealthy || shuttingDown)throw new Error("not_ready");await checkDatabase(pool);response.json({ok:true});}catch{response.status(503).json({ok:false});}});
 app.use(errorResponse);
@@ -48,6 +52,7 @@ function shutdown():Promise<void> {
   if(shutdownWork!==null)return shutdownWork;
   shuttingDown=true;
   logOperational("backend","shutdown_started");
+  for(const close of notificationStreams)close();
   shutdownWork=(async()=>{
     const loops=Promise.allSettled([sessionSupervisor.stop(),transcriptScan.stop(),reconciliationScan.stop(),schedulingScan.stop()]);
     try{await sessions.drainForShutdown();}
