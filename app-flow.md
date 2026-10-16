@@ -29,7 +29,7 @@ The application is a web-first prototype of an ambient personal intelligence sys
 
 **3. Recall:** During a later voice session, the user asks, “What does Ananya like, and what did we discuss on Tuesday?” The assistant recalls her movie preference and the project discussion from Mind.
 
-**4. Anticipate and act:** As Friday approaches, the app proactively reminds the user about the unfinished presentation, even without an active voice session. (Not included in the v0)
+**4. Anticipate and act:** When the resolved due time arrives, the backend records a reminder and the open web app shows an in-app toast, even without an active voice session. The browser can reconnect and receive missed reminders from the durable event feed. This prototype does not send system push notifications when the web app is closed.
 
 **5. Follow through:** The user says, “I sent her the presentation.” The commitment is marked completed, so the app stops reminding them. The user can inspect or correct the associated memories in Mind at any time.
 

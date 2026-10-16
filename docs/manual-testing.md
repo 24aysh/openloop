@@ -1,6 +1,6 @@
 # Manual test: local Openloop MVP
 
-This guide exercises the running browser, backend, and PostgreSQL database together. It uses the single demo user configured in `.env`. The live voice and extraction steps require an OpenAI API key with access to the configured Realtime, transcription, and Responses models; model output may differ from the example. The browser does not read Mind back into Realtime, and due commitments produce backend terminal logs, not user notifications.
+This guide exercises the running browser, backend, and PostgreSQL database together. It uses the single demo user configured in `.env`. The live voice and extraction steps require an OpenAI API key with access to the configured Realtime, transcription, and Responses models; model output may differ from the example. The browser does not read Mind back into Realtime. Due commitments produce terminal logs and in-app reminders while the web app is open.
 
 Run the commands from the repository root unless a step says otherwise. Use local test data only: the SQL below displays transcript and memory content.
 
@@ -26,7 +26,7 @@ bun install
 bun run db:migrate
 ```
 
-If `.env` already exists, keep it and run only `bun install` and `bun run db:migrate`. Edit your local `.env`: replace `OPENAI_API_KEY=replace-with-local-key` with a development key, and confirm the configured model IDs are available to that account. Keep `DATABASE_URL` pointed at `openloop_dev`, `DEMO_USER_ID` and `DEMO_USER_TIMEZONE` set to the intended demo user, and `PORT=3001`: the frontend proxy currently targets port 3001. Do not commit `.env` or paste the key into a terminal command. Migrations must succeed before starting the backend.
+If `.env` already exists, keep it and run only `bun install` and `bun run db:migrate`. Edit your local `.env`: replace `OPENAI_API_KEY=replace-with-local-key` with a development key, set `RECONCILIATION_PROMPT_VERSION=v2`, and confirm the configured model IDs are available to that account. Keep `DATABASE_URL` pointed at `openloop_dev`, `DEMO_USER_ID` and `DEMO_USER_TIMEZONE` set to the intended demo user, and `PORT=3001`: the frontend proxy currently targets port 3001. Do not commit `.env` or paste the key into a terminal command. Migrations must succeed before starting the backend.
 
 ## 2. Run backend and browser
 
@@ -133,9 +133,9 @@ curl -sS -X PATCH 'http://127.0.0.1:3001/api/commitments/COMMITMENT_UUID' \
   -d "{\"expectedVersion\":\"CURRENT_VERSION\",\"dueAt\":\"$due_at\",\"dueTimezone\":\"UTC\",\"dueText\":\"manual test at $due_at\",\"duePrecision\":\"instant\"}"
 ```
 
-Replace `COMMITMENT_UUID` and `CURRENT_VERSION` first. The `date -d` form is for GNU `date` on Linux; on another platform, supply a future UTC ISO-8601 timestamp manually. The response should show a new `version`, an increased `scheduleVersion`, and the chosen `dueAt`. If you receive `version_conflict`, reread the row and retry with its current version. This edit is attributed to the demo user and sets `manualOverride=true`; the reconciler will not update that commitment until the override is released.
+Replace `COMMITMENT_UUID` and `CURRENT_VERSION` first. The `date -d` form is for GNU `date` on Linux; on another platform, supply a future UTC ISO-8601 timestamp manually. The response should show a new `version`, an increased `scheduleVersion`, and the chosen `dueAt`. If you receive `version_conflict`, reread the row and retry with its current version. This edit sets `manualOverride=true`: extraction preserves the edited details, but an explicit spoken completion or dismissal may still change its status.
 
-After the due instant, expect a `{"event":"commitment_due",...}` line in terminal A. It carries IDs and priority, not the private title. Compare its `logId` with:
+After the due instant, expect a `{"event":"commitment_due",...}` line in terminal A and an in-app toast in the open browser. It carries IDs and priority, not the private title. Reopen the page to verify that missed events replay; the browser remembers the last event ID. Compare its `logId` with:
 
 ```sql
 SELECT l.id AS log_id, l.commitment_id, l.schedule_version,
@@ -147,7 +147,9 @@ ORDER BY l.eligible_at, l.batch_id, l.batch_position;
 
 One schedule version gets one durable `commitment_logs` row. A terminal line can repeat after a crash before `emitted_at` is saved, so compare `logId` rather than counting stdout lines as exactly-once delivery. When multiple commitments become due in the same batch, lower priority number logs first (1 before 2 before 3), then due time. An unresolved `due_at IS NULL` commitment does not schedule.
 
-If you manually rescheduled the commitment above, release its override **after** observing the due log and **before** the next voice session. Read its new `version` from PostgreSQL, then run:
+Inspect durable browser events with `SELECT e.id,e.created_at,e.commitment_log_id FROM notification_events e WHERE e.user_id = :'demo_user'::uuid ORDER BY e.id;` or request `GET /api/notifications/events?after=0`. Deleting a commitment in the browser hides it from normal reads, preserves its audit row, and cancels any pending terminal log. Already emitted events remain in the feed; the UI suppresses a toast if the commitment is no longer open on replay.
+
+To allow later spoken rescheduling of a manually edited task, release its override after observing the due log. Read its new `version` from PostgreSQL, then run:
 
 ```sh
 curl -sS -X PATCH 'http://127.0.0.1:3001/api/commitments/COMMITMENT_UUID' \
@@ -155,7 +157,7 @@ curl -sS -X PATCH 'http://127.0.0.1:3001/api/commitments/COMMITMENT_UUID' \
   -d '{"expectedVersion":"CURRENT_VERSION","releaseManualOverride":true}'
 ```
 
-This adds a user-authored `release_override` change and preserves the due log. Use the newest version after this response for any further manual edits. If you did not manually reschedule, no release is needed.
+This adds a user-authored `release_override` change and preserves the due log. Use the newest version after this response for any further manual edits. Releasing is optional for spoken completion or dismissal.
 
 For follow-through, start a **new** voice session and say “I sent Ananya the presentation.” Stop and wait for reconciliation, then check whether the original commitment ID changed to `completed`, its version advanced, and a new `mind_changes` row cites the second session. Re-select the latest session with `\gset` above to inspect its transcript and job. The model may fail to match the prior commitment; in that case, note the extraction result and use **Mark completed** in the Commitments view to verify the manual path. Completing or dismissing a commitment prevents a future schedule decision, but does not remove a log that was already created.
 
@@ -167,6 +169,6 @@ To test memory correction, use **Correct** or **Delete** in Mind. Refresh the SQ
 - **Microphone or call setup fails:** use `http://127.0.0.1:3000`, grant microphone permission, and inspect the Voice phase and session `state`/`error_code`. A valid key and compatible Realtime/transcription model access are required. A session that never reaches `active` should not be treated as a transcript test.
 - **Transcript is absent or out of order:** inspect `transcript_items`, `transcript_parts`, `ordinal`, and `error_code`. Only completed final turns are extracted; partial transcription is not persisted as a Mind source. Use the browser transcript gap display to identify excluded speech.
 - **Transcript exists but Mind is unchanged:** inspect `reconciliation_jobs`. Pending/running jobs may need time; a `blocked` job preserves the transcript. After fixing the cause, run `bun apps/backend/src/reconciliation/operator.ts retry JOB_UUID --reason "cause fixed"` from the repository root. Use `skip` only if you intentionally accept missing extraction for that range.
-- **No due line:** verify `status='open'`, `due_at <= now()`, and the `commitment_logs` row. A null `due_at` is unresolved, a completed/dismissed commitment is ineligible, and an `emitted_at IS NULL` row indicates emission is still pending or retrying. The browser does not show a reminder notification.
+- **No due line or toast:** verify `status='open'`, `due_at <= now()`, the `commitment_logs` row, and `notification_events`. A null `due_at` is unresolved; a completed, dismissed, or deleted commitment is ineligible. `emitted_at IS NULL AND canceled_at IS NULL` means emission is pending or retrying. The browser must be open for the toast; the SSE stream reconnects and replays missed events.
 
 Stop the frontend and backend with Ctrl-C when finished. The backend drains active captures on SIGINT/SIGTERM; check for `incomplete` if you interrupt an active session. Exit `psql` with `\q`. Keep the Docker container running if you want to inspect this database later.

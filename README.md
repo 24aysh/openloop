@@ -27,7 +27,7 @@ bun run --cwd apps/frontend dev
 
 The frontend requests microphone access before creating a backend session. The microphone track remains disabled until WebRTC, the data channel, the backend sideband, and transcript capture are ready. Stop drains accepted final transcript events before closing the call. The backend stores final transcript events from its sideband only; the browser never submits transcript text.
 
-The browser has Voice, Mind, and Commitments views. Voice distinguishes a closed capture from pending or blocked Mind extraction, and shows incomplete/failed capture without claiming the speech was saved. The current session's ordered transcript and gaps can be inspected there. Mind lists searchable semantic and episodic records, supports version-checked correction/deletion, and shows source history. Commitments lists due meaning and priority, supports version-checked completion/dismissal, and shows source history. These views use the existing demo-user API; they do not feed memories into Realtime or send user-facing notifications.
+The browser has Voice, Mind, and Commitments views. Voice distinguishes a closed capture from pending or blocked Mind extraction, and shows incomplete/failed capture without claiming the speech was saved. The current session's ordered transcript and gaps can be inspected there. Mind lists searchable semantic and episodic records, supports version-checked correction/deletion, and shows source history. Commitments lists due meaning and priority, supports version-checked completion/dismissal/deletion, and shows source history. Due events are replayed from PostgreSQL over SSE and shown as in-app toasts while the web app is open. Mind is not fed back into Realtime.
 
 For a live browser walkthrough and SQL checks against transcripts, Mind changes, and due logs, follow the [manual testing guide](docs/manual-testing.md).
 
@@ -40,7 +40,7 @@ bun apps/backend/src/reconciliation/operator.ts skip <job-id> --reason "accepted
 
 Retry keeps the original transcript range and model versions. Skip advances the applied cursor without changing memories or commitments, and the transcript remains available. These commands operate on the configured local database; do not expose them as browser routes. Reconciliation uses [OpenAI Responses strict structured output](https://developers.openai.com/api/docs/guides/structured-outputs) with `store: false`. The sample `gpt-5.4` model is documented as supporting [Responses and structured outputs](https://developers.openai.com/api/docs/models/gpt-5.4); account access must be checked in your environment.
 
-The backend also checks open commitments every second. Once a resolved due time arrives, it records an ordered decision in `commitment_logs` and prints a JSON `commitment_due` line. The database records each schedule version once; a terminal line can repeat after a crash, so use its stable `logId` to identify duplicates. Terminal lines omit the private title. Completing or dismissing a commitment prevents future logs; a log already committed remains as history.
+The backend also checks open commitments every second. Once a resolved due time arrives, it records an ordered decision in `commitment_logs` and prints a JSON `commitment_due` line. A successful emission atomically creates a `notification_events` row; `/api/notifications/stream` replays events after the SSE event ID. The database records each schedule version once; a terminal line can repeat after a crash, so use its stable `logId` to identify duplicates. Terminal lines omit the private title. Completing, dismissing, or deleting a commitment prevents future delivery; a log already emitted remains as history. Existing local `.env` files should use `RECONCILIATION_PROMPT_VERSION=v2` for the improved task extraction prompt; queued v1 jobs retain their original prompt.
 
 On SIGINT/SIGTERM, readiness becomes false and new voice starts are rejected. Existing sessions can report draining while the backend waits up to ten seconds for accepted final turns; unfinished captures become incomplete. Background model requests are aborted and durable jobs are recovered on the next start. A forced process kill can lose sideband events that were never persisted.
 
@@ -52,8 +52,10 @@ bun test apps/backend/tests/transcripts
 bun test apps/backend/tests/sessions
 bun test apps/backend/tests/reconciliation
 bun test apps/backend/tests/scheduling
+bun test apps/backend/tests/notifications
 bun test apps/frontend/tests/voice
 bun test apps/frontend/tests/mind
+bun test apps/frontend/tests/notifications
 bun test apps/backend/tests/integration
 bun run --cwd apps/frontend build
 bun run check-types
