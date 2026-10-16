@@ -10,8 +10,6 @@ The application is a web-first prototype of an ambient personal intelligence sys
 
 3. **Commitments:** Shows promises and unfinished tasks, their deadlines, and whether they are open, completed, or dismissed.
 
-4. **Settings:** Lets users manage microphone permissions, memory preferences, and notifications.
-
 ## Memory Types in Mind
 
 | Memory type | What it remembers | Example | How it is recalled |
