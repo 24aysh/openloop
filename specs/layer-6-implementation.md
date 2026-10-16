@@ -1,0 +1,83 @@
+# Layer 6 implementation plan: integrated MVP and browser demonstration
+
+Status: implemented; deterministic checks passed, live OpenAI/microphone smoke test pending
+Architecture source: [Openloop MVP architecture](../docs/mvp-architecture.md), section 8; [app flow](../app-flow.md)
+Prerequisites: implemented layers [1](layer-1-implementation.md), [2](layer-2-implementation.md), [3](layer-3-implementation.md), [4](layer-4-implementation.md), and [5](layer-5-implementation.md).
+
+## 1. Outcome and boundary
+
+Complete a local, single-user browser demonstration of **Listen → Understand → Remember → Anticipate → Act**: speak through the existing WebRTC session, inspect completed transcripts and source-backed Mind changes, see open/completed commitments, and observe due commitments in the backend terminal. Make capture, reconciliation, and interruption states distinguishable to the user. Exercise the full loop and its failure cases against PostgreSQL before calling the layer complete.
+
+This layer connects and presents existing capabilities. It adds no Mind-to-Realtime readback, browser reminder, push notification, new service, queue, database table, migration, auth system, or UI framework. Realtime remains conversational without persistent recall; the separate Mind screen reads stored data. Terminal `commitment_due` lines remain the only notification substitute. The local backend still uses one configured demo user and is not an internet-facing service.
+
+`app-flow.md` includes memory correction/deletion as a core Mind action. Use the existing version-checked writer routes for small, direct controls; do not add a general editor or new write semantics. Its later voice recall and proactive user-facing reminder examples remain outside this MVP, as already locked in the architecture.
+
+## 2. Existing seams to reuse
+
+- `apps/backend/src/server.ts` already constructs the ingestor, session controller, reconciler, scheduler, `/health/live`, and `/health/ready`. Startup already calls `recoverAtStartup()` before accepting HTTP traffic. The four background loops have `stop()` methods; the reconciliation loop already aborts its model request.
+- `GET /api/sessions/:id` already returns `state`, `captureReady`, `orderedThrough`, `sealedThrough`, `appliedThrough`, `reconciliationBacklog`, `closeReason`, and `errorCode`. `GET /api/sessions/:id/transcript` returns ordered items/parts plus unplaced gaps. Do not create a second transcript source or accept transcript text from the browser.
+- Existing Mind routes provide paged memory and commitment lists, provenance, optimistic-version memory correction/deletion, and commitment edits. They are scoped to the configured demo user. Reuse their pagination and error envelope.
+- `VoiceSessionClient`, `useVoiceSession`, and `VoiceConversation` already own the WebRTC peer, microphone gating, heartbeat, and cleanup. Extend their status handling rather than creating another voice state machine.
+- Existing PostgreSQL test helpers, fake Realtime gateway, fake extractor, injected terminal sink, Bun test runner, and frontend fake environment cover deterministic testing. `apps/frontend/src/dev-server.ts` already proxies `/api/*` to the backend.
+
+Before Layer 6, the voice client parsed only a subset of session status and mapped every terminal heartbeat/stop response to `closed`, including `incomplete` and `failed`. The backend backlog combined pending and blocked jobs. The implementation extends that **existing** status contract with `blockedReconciliationJobs` and `transcriptGapCount`, retaining `reconciliationBacklog` as the total non-succeeded count for compatibility. The transcript API remains the source of detailed ordering gaps.
+
+## 3. Incremental gates and dependencies
+
+| Gate | Requires | Deliverable and interface | Independent acceptance before the next gate |
+| --- | --- | --- | --- |
+| 6A: truthful voice status | Layers 3 and 4 status contracts | Extend `SessionStatus` with `blockedReconciliationJobs: number` and `transcriptGapCount: number`; retain all current fields. Preserve `closed`, `incomplete`, and `failed` as distinct browser states and expose capture/applied/backlog counters. | Fake HTTP/peer tests cover normal stop, incomplete capture, failed session, blocked extraction, close timeout, heartbeat loss, and microphone cleanup. No Mind screen or live OpenAI call required. |
+| 6B: Mind and commitment browser views | Layer 1 read/write routes; independent of 6A | A typed, boundary-validated frontend API adapter and simple Voice / Mind / Commitments navigation. Mind list/search/kind filter, direct correction/deletion, commitment list/status filter and completion/dismissal, and provenance detail reuse existing routes. | Mock HTTP responses verify parsing, loading/empty/error states, cursor pagination, version conflicts, and provenance. Frontend build/typecheck; seeded backend can be viewed without voice. |
+| 6C: bounded backend lifecycle | Layers 2–5; independent of 6A/6B | Coordinate admission, active capture drain, background-loop stop, model abort, socket close, and pool close in the existing backend process. Preserve startup recovery before listen. | Fake controller/loop tests verify order and deadlines; database tests verify unfinished sessions/jobs remain recoverable and overdue schedules run after restart. No browser required. |
+| 6D: cross-layer acceptance | Layers 1–5 and 6A–6C | Focused `apps/backend/tests/integration` scenarios with real PostgreSQL and injected fake provider/model/sink; one frontend status/view contract suite. | All deterministic scenarios in section 6 pass without an API key or microphone. |
+| 6E: local live demonstration | 6A–6D and valid local OpenAI configuration | One real browser voice session, backend reconciliation, Mind/provenance inspection, and a seeded due terminal log; document observed model-dependent results. | Manual checklist in section 7 passes or records a specific blocked external prerequisite. |
+
+Gates 6A, 6B, and 6C may be built in any order. Each can be verified without the later gates. Gate 6D assembles them; 6E is the final external-service check. Do not make an earlier module import a later one.
+
+## 4. Browser behavior and API decisions
+
+Use a single React page with three accessible navigation controls; no router package. Preserve the current voice component and mount it under Voice. Fetch Mind and Commitments when their views open and after a successful edit; provide a manual refresh. Do not run a continuous polling loop for these lists. The backend remains authoritative for sorting and cursor pagination: memories by recent update; commitments by priority and due time. Display due precision and original due text when a deadline is unresolved; never present an unresolved time as scheduled. Use readable local time with the stored timezone when a resolved due instant exists.
+
+The frontend API adapter validates untrusted JSON at the response boundary with focused TypeScript guards or existing project tooling; it must not assume that a static type validates HTTP data. Keep one normalized error shape containing the backend's safe error code. Fetch with an `AbortSignal` and cancel on view change/unmount; stale responses must not replace newer filters or edited data. Preserve opaque `nextCursor` values and reset pagination on filter changes. Show loading, empty, error, and success states. No new dependency is necessary.
+
+Mind shows semantic and episodic records with subject, content, time when present, and a provenance action. Search uses the existing `text` query and kind filter; deleted records are hidden by default. A correction submits `expectedVersion` with edited content (and other fields only when needed); delete submits `expectedVersion`. A `version_conflict` refreshes the record and asks the user to retry their edit instead of silently overwriting it. Commitments show title, status, priority, and due meaning; simple complete/dismiss actions use `PATCH /api/commitments/:id` with `expectedVersion`. Do not optimistically claim an action succeeded before the server responds. Provenance displays change actor, operation, version, timestamp, and exact transcript-part evidence; user-authored changes may have no transcript source. The existing transcript route provides source inspection for the current session, including placed failed/pending items and its `gaps` array.
+
+Voice distinguishes these stages in plain language: microphone/call setup; capture active; capture draining; completed capture awaiting Mind processing; Mind applied through the sealed prefix; extraction blocked; capture incomplete; session failed. A session being `closed` means the capture ended, **not** that every extracted change is already saved. Show `sealedThrough`, `appliedThrough`, total backlog, and blocked count as compact status details. Show “Mind up to date” only after a cleanly closed capture, with no gap/error, `appliedThrough >= sealedThrough`, and no backlog; the claim applies only to the sealed prefix. Never imply omitted or failed speech was captured. If transcript gaps or `errorCode` exist, show an explicit warning and link to transcript inspection. A stop poll that reaches its deadline while the server is still `draining` remains pending/uncertain, not `closed`. A later status refresh can resolve it. Polling and heartbeat failures stop the microphone and show connectivity uncertainty without manufacturing a successful close. Retain the session ID in the mounted page so the browser can recheck after a backend restart.
+
+## 5. Backend lifecycle decisions
+
+Keep the current single-process composition. On SIGINT/SIGTERM, set readiness false and reject **new session starts** while leaving status/heartbeat/close available during the drain window. Ask active browser sessions to mute through their existing heartbeat/status path by transitioning them to draining promptly; the voice client disables its microphone whenever it observes draining or a terminal/error state. Begin capture finalization, allow at most 10 seconds for accepted sideband events to settle, then mark any unfinished capture incomplete with a safe reason. Do not silently convert it to a successful close. Stop new transcript scans, reconciliation claims, and scheduler passes; abort in-flight model requests through the existing reconciliation loop controller. Await bounded loop cleanup, close sideband/call connections, then close HTTP and the PostgreSQL pool. Use one shutdown promise so repeated signals do not start competing cleanups. If the process is forcibly killed, durable jobs and logs still recover through existing leases and startup scans; graceful shutdown cannot promise recovery of events that never reached PostgreSQL.
+
+Keep `recoverAtStartup()` before `listen()`. Once the app starts, existing immediate transcript, reconciliation, and scheduling passes resume pending work and overdue commitments. Readiness is false when the DB check fails, when shutdown begins, or after a fatal background failure; liveness only says the process is running. Do not weaken the scheduler's durable-decision/at-least-once-terminal semantics or claim exactly-once stdout. Keep operational logs to IDs, states, counts, duration, and safe error codes; no API key, raw SDP/audio, transcript text, memory content, or commitment title.
+
+The current `server.ts` closes HTTP before finalizing sessions and waits only five seconds before forcing connections closed. Reorder that existing lifecycle rather than adding a supervisor service. If an import-safe app/runtime factory is required for lifecycle tests, extract only the composition boundary and inject existing controller/loop interfaces; do not refactor the repositories or introduce a DI framework.
+
+## 6. Deterministic verification
+
+Add a root `test:integration` script and include it in `make test`, keeping database suites sequential because they share the example test database. Integration tests use the current Docker PostgreSQL test database and real migrations/transactions. Inject a fake Realtime gateway, deterministic text extractor, and terminal sink; never call OpenAI in CI. Prefer one cross-layer harness over duplicating earlier unit tests.
+
+Required scenarios:
+
+1. Reordered and duplicated final transcription events produce one ordered, sealed extraction prefix and source-backed semantic, episodic, and prospective records. Verify the stored source item/part IDs and session-local due resolution.
+2. A later “I sent it” batch updates the original commitment ID and provenance/version. A due tick **after that completion commits** creates no new log for it.
+3. Three simultaneously due commitments with priorities 1/2/3 create durable logs and terminal lines in priority order; a future priority-1 commitment does not block them. Replayed ticks and a lost terminal acknowledgment retain one durable row per schedule version and the same log ID.
+4. Hold extraction while a user edit commits; the stale result cannot overwrite the manual version. Expire a claim, let a replacement apply, then release the old worker; no stale mutation occurs.
+5. Restart with a pending job, an overdue commitment, and an open capture. The job and schedule recover; the interrupted session reports incomplete. A process kill cannot be simulated as graceful capture completion.
+6. Missing order or transcription failure preserves only the safe earlier prefix, exposes the gap/error and excluded suffix in transcript inspection, and never reports Mind as current for omitted speech.
+7. Model refusal/repeated invalid output blocks extraction while the raw transcript stays inspectable and due scheduling continues. Exercise operator retry after correcting the cause.
+8. Session creation/sideband and the new voice UI never query Mind or inject stored memory into Realtime. The assistant and UI make no claim of persistent voice recall or actual notification delivery.
+
+Test the status adapter with malformed responses, stop timeout, late terminal heartbeat, and blocked-vs-pending counts. Test browser list parsers, opaque cursor handling, filter reset, stale fetch cancellation, provenance with/without sources, and 409/version-conflict refresh. Test shutdown with fake time or short injected deadlines so it is deterministic. Avoid tests that simply mirror the implementation or require waiting for tomorrow's due time.
+
+Run, in order: `bun run test:voice`, `bun run test:integration`, `bun run --cwd apps/frontend build`, `bun run check-types`, `bun run lint`, and `make test`. Record the commands and results in the implementation handoff. No schema migration or new package should be needed; update the README for the new browser views, status meanings, test command, and shutdown behavior. Use the existing `OPENAI_REALTIME_MODEL`, `OPENAI_TRANSCRIPTION_MODEL`, `RECONCILIATION_MODEL`, `DEMO_USER_TIMEZONE`, and other `.env.example` names; section 8.2 of the architecture predates their implementation and must not be copied as new parallel configuration.
+
+## 7. Manual live acceptance
+
+With Docker PostgreSQL, migrated local DB, a valid local API key, and both existing dev servers running:
+
+1. Open Voice, grant microphone permission, and confirm it stays muted until capture is ready. Speak the architecture's Ananya fact, Tuesday event, and high-priority presentation promise. Stop. Observe a closed capture first, then wait for Mind application; inspect ordered transcript, semantic/episodic memories, commitment due time, and exact provenance. Record whether the selected text model actually extracts the intended facts; deterministic tests establish the storage guarantees, not natural-language quality.
+2. In a later session, say the presentation was sent. Confirm the same commitment ID becomes completed and that a subsequent due tick makes no log. Check the browser still has no Realtime Mind recall.
+3. Seed a few immediate due commitments via the existing local test/seed path and watch durable log IDs and terminal priority order. Do not wait for a next-day clock boundary. Restart the backend once with pending work and verify recovery/status.
+4. Demonstrate one incomplete capture and one blocked extraction via controlled test fixtures or local fault injection. Confirm the browser reports uncertainty, the transcript remains inspectable, and existing due schedules still run.
+
+Mark the gate incomplete if model/account access, actual Realtime event shape, browser media permission, or another external prerequisite prevents a live call. Keep the deterministic test result separate from this live result; do not describe unrun smoke steps as passed.
