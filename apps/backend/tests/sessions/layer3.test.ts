@@ -140,11 +140,27 @@ describe("session repository and controller",()=>{
     const {controller,gateway}=setup();const {id}=await ready(controller,gateway);
     await pool.query("INSERT INTO transcript_items(id,user_id,session_id,provider_item_id,role,state) VALUES($1,$2,$3,'provider_private','user','pending')",
       [crypto.randomUUID(),userId,id]);
+    expect((await controller.status(scope,id)).transcriptGapCount).toBe(0);
+    await pool.query("UPDATE transcript_items SET first_seen_at=now()-interval '31 seconds' WHERE session_id=$1",[id]);
     const status=await controller.status(scope,id);const serialized=JSON.stringify(status);
     expect(status.transcriptGapCount).toBe(1);
     expect(serialized).not.toContain("rtc_test");expect(serialized).not.toContain("sess_test");expect(Object.keys(status).sort()).toEqual([
       "appliedThrough","blockedReconciliationJobs","captureReady","closeReason","errorCode","orderedThrough","reconciliationBacklog","sealedThrough","sessionId","state","transcriptGapCount",
     ]);
+  });
+
+  test("status exposes an earlier blocked job when it stalls this session",async()=>{
+    const repository=new SessionRepository(pool);
+    const current=await repository.reserve(scope,{startRequestId:crypto.randomUUID() as UUID,offerHash:"b".repeat(64),timezone:"Asia/Kolkata"});
+    await pool.query("UPDATE voice_sessions SET session_seq=2 WHERE id=$1",[current.session.id]);
+    const earlierSession=crypto.randomUUID();
+    await pool.query(`INSERT INTO voice_sessions(id,user_id,session_seq,start_request_id,offer_hash,state,timezone,closed_at)
+      VALUES($1,$2,1,$3,$4,'closed','Asia/Kolkata',now())`,[earlierSession,userId,crypto.randomUUID(),"a".repeat(64)]);
+    await pool.query(`INSERT INTO reconciliation_jobs(id,user_id,session_id,from_ordinal,through_ordinal,input_hash,state,finished_at,last_error_code,model,prompt_version,schema_version)
+      VALUES($1,$2,$3,1,1,$4,'blocked',now(),'model_refusal','test-model','v1','1')`,[crypto.randomUUID(),userId,earlierSession,"a".repeat(64)]);
+    await pool.query(`INSERT INTO reconciliation_jobs(id,user_id,session_id,from_ordinal,through_ordinal,input_hash,model,prompt_version,schema_version)
+      VALUES($1,$2,$3,1,1,$4,'test-model','v1','1')`,[crypto.randomUUID(),userId,current.session.id,"b".repeat(64)]);
+    expect(await repository.status(scope,current.session.id,false)).toMatchObject({reconciliationBacklog:1,blockedReconciliationJobs:1});
   });
 });
 

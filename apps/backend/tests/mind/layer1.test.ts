@@ -139,7 +139,15 @@ describe("Mind reads and manual edits",()=>{
     await seedUser(pool);await seedRunningJob(pool);
     await pool.query("INSERT INTO transcript_items(id,user_id,session_id,provider_item_id,role,state,first_seen_at) VALUES($1,$2,$3,'later','user','pending',now()-interval '1 hour')",[crypto.randomUUID(),userId,sessionId]);
     const pageResult=await reader.getTranscript({userId},sessionId,{limit:1,cursor:null});
-    expect(pageResult.items).toHaveLength(1);expect(pageResult.items[0]?.parts[0]?.id).toBe(partId);expect(pageResult.gaps).toHaveLength(1);
+    expect(pageResult.items).toHaveLength(1);expect(pageResult.items[0]?.parts[0]?.id).toBe(partId);
+    expect(pageResult.gaps).toHaveLength(1);expect(pageResult.gaps[0]?.reason).toBe("pending");
+  });
+  test("transcript page reports a placed incomplete user turn with the same rules as session status",async()=>{
+    await seedUser(pool);await seedRunningJob(pool);const failed=uuidSchema.parse(crypto.randomUUID());
+    await pool.query(`INSERT INTO transcript_items(id,user_id,session_id,provider_item_id,predecessor_known,ordinal,role,state,first_seen_at)
+      VALUES($1,$2,$3,'failed_item',true,2,'user','failed',now())`,[failed,userId,sessionId]);
+    const pageResult=await reader.getTranscript({userId},sessionId,{limit:50,cursor:null});
+    expect(pageResult.gaps.map(gap=>({id:gap.item.id,reason:gap.reason}))).toContainEqual({id:failed,reason:"failed"});
   });
   test("corrupt audit snapshots fail visibly",async()=>{
     await seedUser(pool);const memory=await seedMemory(pool);

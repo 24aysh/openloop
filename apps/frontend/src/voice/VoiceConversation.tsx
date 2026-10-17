@@ -44,7 +44,7 @@ export function VoiceConversation() {
       </div>
         {status.transcriptGapCount>0?<p className="callout callout-error" role="alert">{status.transcriptGapCount} transcript turn(s) have gaps or incomplete capture. Inspect the transcript.</p>:null}
         {status.blockedReconciliationJobs>0?<p className="callout callout-error" role="alert">Mind extraction is blocked. Transcript remains available.</p>:null}
-        {status.state==="closed"&&!mindCurrent?<p className="callout">Capture ended. Mind processing may still be pending or incomplete.</p>:null}
+        {status.state==="closed"&&!mindCurrent&&status.blockedReconciliationJobs===0?<p className="callout">Capture is complete. Mind extraction is still processing.</p>:null}
         {mindCurrent?<p className="callout callout-success">Mind is up to date for this conversation.</p>:null}
         {status.state==="incomplete"||status.state==="failed"?<p className="callout callout-error" role="alert">Capture did not finish cleanly. Some speech may be missing.</p>:null}
       </>:null}

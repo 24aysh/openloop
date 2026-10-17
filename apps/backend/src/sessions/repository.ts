@@ -114,9 +114,15 @@ export class SessionRepository {
     const result=await this.pool.query<{id:string;state:string;ordered_through:number;sealed_through:number;applied_through:number;close_reason:string|null;error_code:string|null;backlog:number;blocked:number;transcript_gap_count:number}>(`
       SELECT s.id,s.state,s.ordered_through,s.sealed_through,s.applied_through,s.close_reason,s.error_code,
         count(j.id) FILTER (WHERE j.state IN ('pending','running','retry_wait','blocked'))::integer AS backlog,
-        count(j.id) FILTER (WHERE j.state='blocked')::integer AS blocked,
+        GREATEST(count(j.id) FILTER (WHERE j.state='blocked'),CASE WHEN count(j.id) FILTER
+          (WHERE j.state IN ('pending','running','retry_wait','blocked'))>0 AND EXISTS (
+            SELECT 1 FROM reconciliation_jobs blocker JOIN voice_sessions blocked_session
+              ON blocked_session.user_id=blocker.user_id AND blocked_session.id=blocker.session_id
+            WHERE blocker.user_id=s.user_id AND blocker.state='blocked' AND blocked_session.session_seq<=s.session_seq
+          ) THEN 1 ELSE 0 END)::integer AS blocked,
         (SELECT count(*)::integer FROM transcript_items i WHERE i.user_id=s.user_id AND i.session_id=s.id
-          AND (i.ordinal IS NULL OR (i.role IN ('user','unknown') AND i.state<>'complete'))) AS transcript_gap_count
+          AND (i.ordinal IS NULL OR (i.role IN ('user','unknown') AND i.state<>'complete'))
+          AND (s.state IN ('closed','incomplete','failed') OR i.first_seen_at<=now()-interval '30 seconds')) AS transcript_gap_count
       FROM voice_sessions s LEFT JOIN reconciliation_jobs j ON j.user_id=s.user_id AND j.session_id=s.id
       WHERE s.user_id=$1 AND s.id=$2 GROUP BY s.id`,[scope.userId,sessionId]);
     const row=result.rows[0];

@@ -69,9 +69,10 @@ export class MindReader implements MindReaderContract {
       const parts = items.length ? await client.query(`SELECT ${PART_COLUMNS} FROM transcript_parts WHERE user_id=$1 AND item_id=ANY($2::uuid[]) ORDER BY item_id,content_index`,[scope.userId,items.map(item=>item.id)]) : {rows:[]};
       const partMap = new Map<string,ReturnType<typeof partFromRow>[]>();
       for (const row of parts.rows) { const part = partFromRow(row); const current = partMap.get(part.itemId) ?? []; current.push(part); partMap.set(part.itemId,current); }
-      const unplaced = await client.query(`SELECT ${ITEM_COLUMNS} FROM transcript_items WHERE user_id=$1 AND session_id=$2 AND ordinal IS NULL ORDER BY first_seen_at,id`,[scope.userId,sessionId]);
+      const gaps = await client.query(`SELECT ${ITEM_COLUMNS} FROM transcript_items WHERE user_id=$1 AND session_id=$2
+        AND (ordinal IS NULL OR (role IN ('user','unknown') AND state<>'complete')) ORDER BY first_seen_at,id`,[scope.userId,sessionId]);
       const last = items.at(-1);
-      return { items:items.map(item=>({item,parts:partMap.get(item.id)??[]})), gaps:unplaced.rows.map(row=>{const item=itemFromRow(row);return {item,reason:item.state === "failed" ? "failed" as const : item.state === "excluded" ? "excluded" as const : "unplaced" as const};}),
+      return { items:items.map(item=>({item,parts:partMap.get(item.id)??[]})), gaps:gaps.rows.map(row=>{const item=itemFromRow(row);return {item,reason:item.state === "failed" ? "failed" as const : item.state === "excluded" ? "excluded" as const : item.state === "pending" ? "pending" as const : "unplaced" as const};}),
         nextCursor:rawItems.length>page.limit && last ? encodeCursor({v:1,kind:"transcript",filter:fingerprint,ordinal:last.ordinal ?? 0,id:last.id}) : null };
     });
   }
