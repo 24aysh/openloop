@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { commitmentSchema, counterSchema, jobClaimSchema, timestampSchema, timezoneSchema, uuidSchema } from "../../src/contracts";
+import { commitmentSchema, counterSchema, jobClaimSchema, memorySchema, timestampSchema, timezoneSchema, uuidSchema } from "../../src/contracts";
 import { OpenAITextExtractor, parseExtractionOutput, retryAfterSeconds, type ResponseRequest } from "../../src/reconciliation/extractor";
 import { resolveDue } from "../../src/reconciliation/time";
 import { validateProposals } from "../../src/reconciliation/validate";
@@ -45,6 +45,7 @@ describe("Responses adapter", () => {
     expect(instructions).toContain("Episodic memories are past events only");
     expect(instructions).toContain("different future occurrence");
     expect(instructions).toContain("Transcript extraction never deletes a commitment");
+    expect(instructions).toContain("every distinct supported fact and commitment from each new user turn");
     expect(instructions).toContain("manual");
   });
   test("sends strict stateless request and parses REST output items", async () => {
@@ -96,6 +97,21 @@ describe("validation and due-time resolution", () => {
     status:"open",priority:2,dueAt:"2026-10-17T03:10:00.000Z",dueTimezone:"Asia/Kolkata",dueText:"tomorrow at 8:40 a.m.",duePrecision:"instant",
     version:"2",scheduleVersion:"1",manualOverride,createdAt:"2026-10-15T04:00:00.000Z",updatedAt:"2026-10-15T04:00:00.000Z",
     completedAt:null,dismissedAt:null,
+  });
+  test("fresh speech recreates a deleted fact but does not duplicate an active fact", () => {
+    const text = "Ananya likes science fiction.";
+    const base = fixture(text);
+    const deleted = memorySchema.parse({ id: uuidSchema.parse("00000000-0000-4000-8000-000000000091"), userId,
+      kind: "semantic", subject: "Ananya", predicate: "movie_preference", content: "Ananya likes science fiction",
+      occurredAt: null, timeText: null, state: "deleted", version: "2", manualOverride: true,
+      createdAt: "2026-10-14T05:00:00.000Z", updatedAt: "2026-10-14T06:00:00.000Z" });
+    const change: ProposedChange = { entity: "memory", action: "create", target_id: null, expected_version: null, commitment: null,
+      memory: { kind: "semantic", subject: "Ananya", predicate: "movie_preference", content: "Ananya likes science fiction", occurred_at: null, time_text: null },
+      sources: [{ part_id: partId, evidence_text: text }] };
+    expect(validateProposals({ ...base, mind: { ...base.mind, memories: [deleted] } }, [change]).changes).toHaveLength(1);
+    const active = memorySchema.parse({ ...deleted, id: uuidSchema.parse("00000000-0000-4000-8000-000000000092"),
+      state: "active", version: "1", manualOverride: false });
+    expect(validateProposals({ ...base, mind: { ...base.mind, memories: [deleted, active] } }, [change]).changes).toEqual([]);
   });
   test("extracts a direct reminder request as a source-backed commitment",()=>{
     const text="Remind me to call Ananya tomorrow at 9 a.m.";
@@ -261,6 +277,9 @@ describe("validation and due-time resolution", () => {
     const repeatedText = "I have a meeting with Anna on 17th October at 9:25 PM.";
     const repeated = fixture(repeatedText, "2026-10-17T15:50:00.000Z");
     expect(validateProposals({ ...repeated, mind: { ...repeated.mind, commitments: [deleted] } },
+      [proposedMeeting(repeatedText, "17th October at 9:25 PM", "21:25")]).changes).toHaveLength(1);
+    const completed = commitmentSchema.parse({ ...deleted, status: "completed", completedAt: "2026-10-17T15:45:00.000Z" });
+    expect(validateProposals({ ...repeated, mind: { ...repeated.mind, commitments: [completed] } },
       [proposedMeeting(repeatedText, "17th October at 9:25 PM", "21:25")]).changes).toEqual([]);
   });
 });

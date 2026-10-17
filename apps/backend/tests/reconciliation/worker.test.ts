@@ -5,7 +5,7 @@ import { counterSchema, uuidSchema, type UUID } from "../../src/contracts";
 import { MindReader, MindWriter, hashTranscriptInput } from "../../src/mind";
 import { ReconciliationRepository, ReconciliationWorker, type ClaimedExtraction, type ExtractionOutcome, type TextExtractor } from "../../src/reconciliation";
 import { clearTestDatabase, createTestPool, prepareTestDatabase } from "../helpers/database";
-import { itemId, jobId, otherUserId, partId, seedMemory, seedRunningJob, seedUser, sessionId, userId } from "../helpers/factories";
+import { itemId, jobId, otherUserId, partId, seedCommitment, seedMemory, seedRunningJob, seedUser, sessionId, userId } from "../helpers/factories";
 
 let pool: pg.Pool;
 let repository: ReconciliationRepository;
@@ -192,19 +192,42 @@ describe("durable claim and worker", () => {
     expect((await pool.query("SELECT content FROM memories WHERE id=$1", [foreign.id])).rows[0]?.content).toBe(foreign.content);
   });
 
-  test("a deleted manual memory is not recreated from a repeated statement", async () => {
-    await firstJob("Ananya likes science fiction");
+  test("a new mixed turn recreates deleted facts and commitments without reusing tombstones", async () => {
+    const text = "Ananya likes science fiction. I will send Ananya the presentation.";
+    await firstJob(text);
     const memory = await seedMemory(pool);
+    const commitment = await seedCommitment(pool);
     await writer.deleteMemory({ userId }, memory.id, { expectedVersion: memory.version });
-    const worker = new ReconciliationWorker(repository, new FakeExtractor(input => ({ kind: "success", proposals: [{
-      entity: "memory", action: "create", target_id: null, expected_version: null, commitment: null,
-      memory: { kind: "semantic", subject: "Ananya", predicate: "movie_preference", content: "Ananya likes science fiction", occurred_at: null, time_text: null },
-      sources: [{ part_id: input.newParts[0]?.partId ?? partId, evidence_text: "Ananya likes science fiction" }],
-    }] })), writer);
+    await writer.deleteCommitment({ userId }, commitment.id, { expectedVersion: commitment.version });
+    const worker = new ReconciliationWorker(repository, new FakeExtractor(input => {
+      expect(input.mind.memories).toHaveLength(input.claim.fromOrdinal === 1 ? 0 : 1);
+      expect(input.mind.commitments).toHaveLength(input.claim.fromOrdinal === 1 ? 0 : 1);
+      const sources = [{ part_id: input.newParts[0]?.partId ?? partId, evidence_text: text }];
+      return { kind: "success", proposals: [
+        { entity: "memory", action: "create", target_id: null, expected_version: null, commitment: null,
+          memory: { kind: "semantic", subject: "Ananya", predicate: "movie_preference", content: "Ananya likes science fiction", occurred_at: null, time_text: null }, sources },
+        { entity: "commitment", action: "create", target_id: null, expected_version: null, memory: null,
+          commitment: { title: "Send presentation", subject: "Ananya", status: "open", priority: 2, due_text: null,
+            due_precision: "none", temporal_kind: "none", offset_datetime: null, local_date: null, local_time: null,
+            timezone: null, relative_seconds: null }, sources },
+      ] };
+    }), writer);
     expect(await worker.tick()).toBe("applied");
     const snapshot = await reader.getSnapshot({ userId });
-    expect(snapshot.memories).toHaveLength(1);
-    expect(snapshot.memories[0]?.state).toBe("deleted");
+    expect(snapshot.memories.map(item => item.state).sort()).toEqual(["active", "deleted"]);
+    expect(snapshot.commitments.map(item => item.status).sort()).toEqual(["deleted", "open"]);
+    const newMemory = snapshot.memories.find(item => item.state === "active");
+    const newCommitment = snapshot.commitments.find(item => item.status === "open");
+    if (!newMemory || !newCommitment) throw new Error("Mixed extraction did not create both records");
+    expect(newMemory.id).not.toBe(memory.id);
+    expect(newCommitment.id).not.toBe(commitment.id);
+    expect((await reader.getProvenance({ userId }, { type: "memory", id: newMemory.id }))[0]?.jobId).toBe(jobId);
+    expect((await reader.getProvenance({ userId }, { type: "commitment", id: newCommitment.id }))[0]?.jobId).toBe(jobId);
+    await secondJob(text, text);
+    expect(await worker.tick()).toBe("applied");
+    const afterRepeat = await reader.getSnapshot({ userId });
+    expect(afterRepeat.memories).toHaveLength(2);
+    expect(afterRepeat.commitments).toHaveLength(2);
   });
 
   test("refusal blocks FIFO, explicit retry succeeds, explicit skip advances without changes", async () => {

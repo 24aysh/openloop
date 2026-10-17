@@ -92,9 +92,9 @@ export function validateProposals(input: ClaimedExtraction, proposals: readonly 
           : `memory:episodic:${norm(value.data.subject)}:${norm(value.data.predicate)}:${norm(value.data.content)}:${value.data.occurredAt ?? ""}:${norm(value.data.timeText ?? "")}`;
         if (creates.has(key)) fail("duplicate_create");
         creates.add(key);
-        const existing = input.mind.memories.find(item => item.kind === value.data.kind && norm(item.subject) === norm(value.data.subject) && norm(item.predicate) === norm(value.data.predicate)
+        const existing = input.mind.memories.find(item => item.state === "active" && item.kind === value.data.kind && norm(item.subject) === norm(value.data.subject) && norm(item.predicate) === norm(value.data.predicate)
           && (value.data.kind === "semantic" || sameMemory(item, value.data)));
-        if (existing) { if (existing.manualOverride || existing.state === "deleted" || sameMemory(existing, value.data)) continue; fail("existing_memory_requires_update"); }
+        if (existing) { if (existing.manualOverride || sameMemory(existing, value.data)) continue; fail("existing_memory_requires_update"); }
       }
       changes.push({ entity: "memory", action: proposal.action as "create" | "update", targetId: old?.id ?? null, expectedVersion: old?.version ?? null, value: value.data, sources });
       continue;
@@ -139,7 +139,7 @@ export function validateProposals(input: ClaimedExtraction, proposals: readonly 
       const matching = input.mind.commitments.filter(item => norm(item.title) === norm(value.data.title) && norm(item.subject ?? "") === norm(value.data.subject ?? ""));
       const open = matching.find(item => item.status === "open");
       if (open) { if (open.manualOverride || sameCommitment(open, value.data)) continue; fail("existing_commitment_requires_update"); }
-      if (matching.some(item => sameCommitmentOccurrence(item, value.data))) continue;
+      if (matching.some(item => item.status !== "deleted" && sameCommitmentOccurrence(item, value.data))) continue;
     }
     changes.push({ entity: "commitment", action: proposal.action as "create" | "update" | "complete" | "dismiss" | "reopen", targetId: old?.id ?? null, expectedVersion: old?.version ?? null, value: value.data, sources });
   }

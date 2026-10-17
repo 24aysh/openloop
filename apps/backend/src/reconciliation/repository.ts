@@ -109,8 +109,8 @@ export class ReconciliationRepository {
       if (!parts) { await blockIntegrity(client, job.id); return null; }
       const newParts = parts.filter(part => part.ordinal >= job.from_ordinal);
       if (job.state === "blocked" && (newParts.length === 0 || newParts.some(part => part.text.trim().length > 0))) return null;
-      const memories = await client.query(`SELECT ${MEMORY_COLUMNS} FROM memories WHERE user_id=$1 ORDER BY id`, [userId]);
-      const commitments = await client.query(`SELECT ${COMMITMENT_COLUMNS} FROM commitments WHERE user_id=$1 ORDER BY id`, [userId]);
+      const memories = await client.query(`SELECT ${MEMORY_COLUMNS} FROM memories WHERE user_id=$1 AND state='active' ORDER BY id`, [userId]);
+      const commitments = await client.query(`SELECT ${COMMITMENT_COLUMNS} FROM commitments WHERE user_id=$1 AND status<>'deleted' ORDER BY id`, [userId]);
       const revision = counterSchema.parse(state.rows[0].revision);
       const claimToken = uuidSchema.parse(crypto.randomUUID());
       await client.query(`UPDATE reconciliation_jobs SET state='running',attempts=attempts+1,claim_token=$2,
