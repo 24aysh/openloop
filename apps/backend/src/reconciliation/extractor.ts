@@ -16,13 +16,20 @@ const commitmentSchema = z.strictObject({
   offset_datetime: z.string().nullable(), local_date: z.string().nullable(), local_time: z.string().nullable(),
   timezone: z.string().nullable(), relative_seconds: z.number().int().positive().nullable(),
 });
+const targetFields = {
+  target_id: uuidSchema.nullable(), expected_version: z.string().regex(/^[1-9][0-9]*$/).nullable(),
+  sources: z.array(sourceSchema).min(1),
+};
 const responseSchema = z.strictObject({
   schema_version: z.literal("1"),
-  changes: z.array(z.strictObject({
-    entity: z.enum(["memory", "commitment"]), action: z.enum(["create", "update", "delete", "complete", "dismiss", "reopen"]),
-    target_id: uuidSchema.nullable(), expected_version: z.string().regex(/^[1-9][0-9]*$/).nullable(),
-    memory: memorySchema.nullable(), commitment: commitmentSchema.nullable(), sources: z.array(sourceSchema).min(1),
-  })).max(50),
+  changes: z.array(z.union([
+    z.strictObject({ entity: z.literal("memory"), action: z.enum(["create", "update"]), ...targetFields,
+      memory: memorySchema, commitment: z.null() }),
+    z.strictObject({ entity: z.literal("memory"), action: z.literal("delete"), ...targetFields,
+      memory: z.null(), commitment: z.null() }),
+    z.strictObject({ entity: z.literal("commitment"), action: z.enum(["create", "update", "complete", "dismiss", "reopen"]),
+      ...targetFields, memory: z.null(), commitment: commitmentSchema }),
+  ])).max(50),
 });
 
 export function parseExtractionOutput(text: string): ExtractionOutcome {

@@ -31,7 +31,7 @@ function proposal(text: string): ProposedChange {
 }
 
 describe("Responses adapter", () => {
-  test("v2 prompt explicitly recognizes reminder requests and existing-task references",async()=>{
+  test("v2 prompt explicitly recognizes reminders, future meetings, and existing-task references",async()=>{
     let instructions="";
     const request:ResponseRequest=async(_url,init)=>{
       const body=JSON.parse(String(init.body)) as {input:{content:string}[]};
@@ -41,6 +41,10 @@ describe("Responses adapter", () => {
     await new OpenAITextExtractor("fake",request).extract({...fixture("Remind me to call Ananya"),promptVersion:"v2"},new AbortController().signal);
     expect(instructions).toBe(EXTRACTION_INSTRUCTIONS);
     expect(instructions).toContain("Remind me to send the slides tomorrow");
+    expect(instructions).toContain("I have a meeting tomorrow");
+    expect(instructions).toContain("Episodic memories are past events only");
+    expect(instructions).toContain("different future occurrence");
+    expect(instructions).toContain("Transcript extraction never deletes a commitment");
     expect(instructions).toContain("manual");
   });
   test("sends strict stateless request and parses REST output items", async () => {
@@ -62,6 +66,13 @@ describe("Responses adapter", () => {
     expect(parseExtractionOutput("not json")).toEqual({ kind: "invalid_output", code: "invalid_json" });
     const quota: ResponseRequest = async () => Response.json({ error: { code: "insufficient_quota" } }, { status: 429 });
     await expect(new OpenAITextExtractor("fake", quota).extract(input, new AbortController().signal)).rejects.toMatchObject({ failure: { code: "model_quota", policy: "block" } });
+  });
+  test("rejects illegal entity, action, and value combinations at the response boundary", () => {
+    const invalid = JSON.stringify({ schema_version: "1", changes: [{
+      entity: "commitment", action: "delete", target_id: null, expected_version: null,
+      memory: null, commitment: null, sources: [{ part_id: partId, evidence_text: "Delete the meeting" }],
+    }] });
+    expect(parseExtractionOutput(invalid)).toEqual({ kind: "invalid_output", code: "invalid_schema" });
   });
   test("parses bounded Retry-After values", () => {
     expect(retryAfterSeconds("15")).toBe(15);
@@ -190,5 +201,38 @@ describe("validation and due-time resolution", () => {
     });
     const changes = validateProposals(fixture(text), [event("Met Ananya", "Monday"), event("Discussed the project with Ananya", "Tuesday")]);
     expect(changes.changes).toHaveLength(2);
+  });
+  test("rejects a scheduled future meeting represented as an episodic memory", () => {
+    const text = "I have a meeting with Harry on 17th October at 9:20 p.m.";
+    const event: ProposedChange = { entity: "memory", action: "create", target_id: null, expected_version: null, commitment: null,
+      memory: { kind: "episodic", subject: "user", predicate: "has meeting", content: text, occurred_at: null,
+        time_text: "October 17 at 9:20 PM" },
+      sources: [{ part_id: partId, evidence_text: text }] };
+    expect(() => validateProposals(fixture(text, "2026-10-17T15:47:00.000Z"), [event])).toThrowError(expect.objectContaining({
+      failure: { code: "future_event_requires_commitment", policy: "invalid" },
+    }));
+    expect(validateProposals(fixture(text, "2026-10-17T16:00:00.000Z"), [event]).changes).toHaveLength(1);
+  });
+  test("creates a distinct future occurrence after an older matching commitment was deleted", () => {
+    const deleted = commitmentSchema.parse({ ...existing(true), title: "Meeting with Anna", subject: "Anna", status: "deleted",
+      dueAt: "2026-10-17T15:55:00.000Z", dueTimezone: "Asia/Kolkata", dueText: "17th October at 9:25 PM",
+      duePrecision: "instant", completedAt: null, dismissedAt: null });
+    const proposedMeeting = (text: string, dueText: string, localTime: string): ProposedChange => ({
+      entity: "commitment", action: "create", target_id: null, expected_version: null, memory: null,
+      commitment: { title: "Meeting with Anna", subject: "Anna", status: "open", priority: 2, due_text: dueText,
+        due_precision: "instant", temporal_kind: "local_datetime", offset_datetime: null, local_date: "2026-10-17",
+        local_time: localTime, timezone: null, relative_seconds: null },
+      sources: [{ part_id: partId, evidence_text: text }],
+    });
+    const newText = "I have a meeting with Anna on 17th October at 9:35 PM.";
+    const base = fixture(newText, "2026-10-17T15:58:02.000Z");
+    const newOccurrence = validateProposals({ ...base, mind: { ...base.mind, commitments: [deleted] } },
+      [proposedMeeting(newText, "17th October at 9:35 PM", "21:35")]);
+    expect(newOccurrence.changes[0]?.value).toMatchObject({ title: "Meeting with Anna", dueAt: "2026-10-17T16:05:00.000Z" });
+
+    const repeatedText = "I have a meeting with Anna on 17th October at 9:25 PM.";
+    const repeated = fixture(repeatedText, "2026-10-17T15:50:00.000Z");
+    expect(validateProposals({ ...repeated, mind: { ...repeated.mind, commitments: [deleted] } },
+      [proposedMeeting(repeatedText, "17th October at 9:25 PM", "21:25")]).changes).toEqual([]);
   });
 });
