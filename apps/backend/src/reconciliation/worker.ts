@@ -26,6 +26,22 @@ export class ReconciliationWorker {
     logReconciliation("claimed", input.claim.jobId, { sessionId:input.claim.sessionId,fromOrdinal:input.claim.fromOrdinal,
       throughOrdinal:input.claim.throughOrdinal,attempt: input.attempt });
     if (signal.aborted) return "deferred";
+    if (input.newParts.length > 0 && input.newParts.every(part => part.text.trim().length === 0)) {
+      try {
+        await this.writer.applyExtraction(input.claim, { changes: [] });
+        logReconciliation("applied", input.claim.jobId, { sessionId:input.claim.sessionId,fromOrdinal:input.claim.fromOrdinal,
+          throughOrdinal:input.claim.throughOrdinal,attempt:input.attempt,proposalCount:0,changeCount:0,
+          reason:"empty_transcript",durationMs:Math.round(performance.now()-started) });
+        return "applied";
+      } catch (error) {
+        if (error instanceof DomainError && error.code === "stale_claim") return "deferred";
+        if (error instanceof DomainError && ["stale_snapshot", "dependency_blocked"].includes(error.code)) {
+          return this.fail(input,{code:"stale_snapshot",policy:"conflict"},started);
+        }
+        if (!(error instanceof DomainError) && await this.repository.jobState(input.claim.jobId) === "succeeded") return "applied";
+        throw error;
+      }
+    }
     const transcriptBytes = Buffer.byteLength(JSON.stringify([...input.earlierParts, ...input.newParts]), "utf8");
     const mindBytes = Buffer.byteLength(JSON.stringify(input.mind), "utf8");
     if (transcriptBytes > 65_536 || mindBytes > 131_072) {

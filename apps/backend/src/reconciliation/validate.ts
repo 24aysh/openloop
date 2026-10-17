@@ -17,6 +17,21 @@ const sameMemory = (old: Memory, value: MemoryValue) =>
   old.kind === value.kind && old.subject === value.subject && old.predicate === value.predicate && old.content === value.content && old.occurredAt === value.occurredAt && old.timeText === value.timeText;
 const sameCommitment = (old: Commitment, value: { title: string; subject: string | null; status: string; priority: number; dueAt: string | null; dueTimezone: string | null; dueText: string | null; duePrecision: string }) =>
   old.title === value.title && old.subject === value.subject && old.status === value.status && old.priority === value.priority && old.dueAt === value.dueAt && old.dueTimezone === value.dueTimezone && old.dueText === value.dueText && old.duePrecision === value.duePrecision;
+const sameCommitmentOccurrence = (old: Commitment, value: { title: string; subject: string | null; dueAt: string | null; dueTimezone: string | null; dueText: string | null; duePrecision: string }) =>
+  old.title === value.title && old.subject === value.subject && old.dueAt === value.dueAt && old.dueTimezone === value.dueTimezone && old.dueText === value.dueText && old.duePrecision === value.duePrecision;
+
+function futureEpisodicTime(input: ClaimedExtraction, timeText: string | null,
+  sourceParts: readonly ClaimedExtraction["newParts"][number][]): boolean {
+  if (timeText === null) return false;
+  const orderedParts = [...sourceParts].sort((left, right) => left.ordinal - right.ordinal || left.contentIndex - right.contentIndex);
+  const anchorPart = orderedParts.find(part => part.timeAnchorAt !== null);
+  if (!anchorPart?.timeAnchorAt) return false;
+  const evidence = orderedParts.map(part => part.text).join(" ");
+  const due = resolveDue({ title: "", subject: null, status: "open", priority: 2, due_text: anchorPart.text,
+    due_precision: "unresolved", temporal_kind: "unresolved", offset_datetime: null, local_date: null,
+    local_time: null, timezone: null, relative_seconds: null }, input.sessionTimezone, anchorPart, evidence);
+  return due.dueAt !== null && Date.parse(due.dueAt) > Date.parse(anchorPart.timeAnchorAt);
+}
 
 export function validateProposals(input: ClaimedExtraction, proposals: readonly ProposedChange[]): ValidatedChangeSet {
   if (proposals.length > 50) fail("too_many_changes");
@@ -58,6 +73,7 @@ export function validateProposals(input: ClaimedExtraction, proposals: readonly 
       }
       if (!proposal.memory) fail("missing_memory_value");
       const memory = proposal.memory;
+      if (memory.kind === "episodic" && futureEpisodicTime(input, memory.time_text, sourceParts)) fail("future_event_requires_commitment");
       let occurredAt: string | null = null;
       if (memory.kind === "episodic" && memory.occurred_at !== null) {
         const parsed = timestampSchema.safeParse(memory.occurred_at);
@@ -120,8 +136,10 @@ export function validateProposals(input: ClaimedExtraction, proposals: readonly 
       const key = `commitment:${norm(value.data.title)}:${norm(value.data.subject ?? "")}`;
       if (creates.has(key)) fail("duplicate_create");
       creates.add(key);
-      const existing = input.mind.commitments.find(item => norm(item.title) === norm(value.data.title) && norm(item.subject ?? "") === norm(value.data.subject ?? ""));
-      if (existing) { if (existing.manualOverride || sameCommitment(existing, value.data)) continue; fail("existing_commitment_requires_update"); }
+      const matching = input.mind.commitments.filter(item => norm(item.title) === norm(value.data.title) && norm(item.subject ?? "") === norm(value.data.subject ?? ""));
+      const open = matching.find(item => item.status === "open");
+      if (open) { if (open.manualOverride || sameCommitment(open, value.data)) continue; fail("existing_commitment_requires_update"); }
+      if (matching.some(item => sameCommitmentOccurrence(item, value.data))) continue;
     }
     changes.push({ entity: "commitment", action: proposal.action as "create" | "update" | "complete" | "dismiss" | "reopen", targetId: old?.id ?? null, expectedVersion: old?.version ?? null, value: value.data, sources });
   }

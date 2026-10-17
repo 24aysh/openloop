@@ -93,7 +93,7 @@ export class ReconciliationRepository {
       const job = jobResult.rows[0];
       if (!job || await earliest(client, userId) !== job.id) return null;
       const now = await databaseNow(client);
-      if (job.state === "blocked" || job.state === "succeeded" || job.state === "skipped") return null;
+      if (job.state === "succeeded" || job.state === "skipped") return null;
       if (job.state === "running") {
         if (!job.lease_until || job.lease_until > now) return null;
         if (job.attempts >= 3) {
@@ -103,22 +103,25 @@ export class ReconciliationRepository {
         }
         await client.query(`UPDATE reconciliation_jobs SET state='retry_wait',claim_token=NULL,lease_until=NULL,base_mind_revision=NULL,
           available_at=now(),last_error_code='lease_expired',updated_at=now() WHERE id=$1`, [job.id]);
-      } else if (!(["pending", "retry_wait"].includes(job.state)) || job.available_at > now) return null;
+      } else if (job.state !== "blocked" && (!(["pending", "retry_wait"].includes(job.state)) || job.available_at > now)) return null;
       if (session.applied_through !== job.from_ordinal - 1 || session.sealed_through < job.through_ordinal) return null;
       const parts = await readParts(client, userId, session, job);
       if (!parts) { await blockIntegrity(client, job.id); return null; }
+      const newParts = parts.filter(part => part.ordinal >= job.from_ordinal);
+      if (job.state === "blocked" && (newParts.length === 0 || newParts.some(part => part.text.trim().length > 0))) return null;
       const memories = await client.query(`SELECT ${MEMORY_COLUMNS} FROM memories WHERE user_id=$1 ORDER BY id`, [userId]);
       const commitments = await client.query(`SELECT ${COMMITMENT_COLUMNS} FROM commitments WHERE user_id=$1 ORDER BY id`, [userId]);
       const revision = counterSchema.parse(state.rows[0].revision);
       const claimToken = uuidSchema.parse(crypto.randomUUID());
       await client.query(`UPDATE reconciliation_jobs SET state='running',attempts=attempts+1,claim_token=$2,
-        lease_until=now()+interval '90 seconds',base_mind_revision=$3,finished_at=NULL,updated_at=now()
+        lease_until=now()+interval '90 seconds',base_mind_revision=$3,finished_at=NULL,
+        resolution_note=CASE WHEN state='blocked' THEN 'Automatically recovered empty transcript range' ELSE resolution_note END,updated_at=now()
         WHERE id=$1`, [job.id, claimToken, revision]);
       const claim = jobClaimSchema.parse({ userId, jobId, sessionId: uuidSchema.parse(session.id), claimToken, baseMindRevision: revision,
         fromOrdinal: job.from_ordinal, throughOrdinal: job.through_ordinal, inputHash: job.input_hash });
       return { claim, attempt: job.attempts + 1, model: job.model, promptVersion: job.prompt_version, schemaVersion: job.schema_version,
         sessionTimezone: session.timezone, sessionStartedAt: session.created_at.toISOString(),
-        earlierParts: recentContext(parts,job.from_ordinal), newParts: parts.filter(part => part.ordinal >= job.from_ordinal),
+        earlierParts: recentContext(parts,job.from_ordinal), newParts,
         mind: { revision, memories: memories.rows.map(memoryFromRow), commitments: commitments.rows.map(commitmentFromRow) },
         validationFeedback: job.last_error_code && /^(invalid_|incomplete_output)/.test(job.last_error_code) ? job.last_error_code : null };
     });

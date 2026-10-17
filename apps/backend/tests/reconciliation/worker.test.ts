@@ -115,6 +115,69 @@ describe("durable claim and worker", () => {
     expect((await pool.query("SELECT count(*)::integer AS count FROM mind_changes WHERE user_id=$1 AND job_id=$2", [userId, jobId])).rows[0]?.count).toBe(0);
   });
 
+  test("blank completed turns advance without calling the model", async () => {
+    await firstJob("   ");
+    let called = false;
+    const worker = new ReconciliationWorker(repository, new FakeExtractor(() => {
+      called = true;
+      return { kind: "success", proposals: [] };
+    }), writer);
+    expect(await worker.tick()).toBe("applied");
+    expect(called).toBe(false);
+    expect((await pool.query("SELECT state FROM reconciliation_jobs WHERE id=$1", [jobId])).rows[0]?.state).toBe("succeeded");
+    expect((await pool.query("SELECT applied_through FROM voice_sessions WHERE id=$1", [sessionId])).rows[0]?.applied_through).toBe(1);
+  });
+
+  test("a blocked blank range recovers and releases the next valid job", async () => {
+    await firstJob("");
+    const later = await secondJob("", "I need to call Ananya tomorrow");
+    await pool.query(`UPDATE reconciliation_jobs SET state='blocked',attempts=2,finished_at=now(),last_error_code='invalid_missing_new_evidence'
+      WHERE id=$1`, [jobId]);
+    let calls = 0;
+    const worker = new ReconciliationWorker(repository, new FakeExtractor(() => {
+      calls++;
+      return { kind: "success", proposals: [] };
+    }), writer);
+    expect(await worker.tick()).toBe("applied");
+    expect(calls).toBe(0);
+    expect((await pool.query("SELECT state,resolution_note FROM reconciliation_jobs WHERE id=$1", [jobId])).rows[0]).toMatchObject({
+      state: "succeeded", resolution_note: "Automatically recovered empty transcript range",
+    });
+    expect(await worker.tick()).toBe("applied");
+    expect(calls).toBe(1);
+    expect((await pool.query("SELECT state FROM reconciliation_jobs WHERE id=$1", [later.job])).rows[0]?.state).toBe("succeeded");
+  });
+
+  test("a future meeting misclassified as memory retries and becomes a commitment",async()=>{
+    const text="I have a meeting with Harry on 17th October at 9:20 p.m.";
+    const timeText="17th October at 9:20 p.m.";
+    const anchor="2026-10-17T15:47:00.000Z";
+    await firstJob(text);
+    await pool.query("UPDATE transcript_items SET time_anchor_at=$2 WHERE id=$1",[itemId,anchor]);
+    const inputHash=hashTranscriptInput("Asia/Kolkata",[{ordinal:1,itemId,partId,contentIndex:0,
+      textHash:createHash("sha256").update(text).digest("hex"),timeAnchorAt:anchor}]);
+    await pool.query("UPDATE reconciliation_jobs SET input_hash=$2 WHERE id=$1",[jobId,inputHash]);
+    let attempt=0;
+    const worker=new ReconciliationWorker(repository,new FakeExtractor(input=>{
+      attempt++;
+      if(attempt===1)return {kind:"success",proposals:[{entity:"memory",action:"create",target_id:null,expected_version:null,commitment:null,
+        memory:{kind:"episodic",subject:"user",predicate:"has meeting",content:text,occurred_at:null,time_text:timeText},
+        sources:[{part_id:partId,evidence_text:text}]}]};
+      expect(input.validationFeedback).toBe("invalid_future_event_requires_commitment");
+      return {kind:"success",proposals:[{entity:"commitment",action:"create",target_id:null,expected_version:null,memory:null,
+        commitment:{title:"Meeting with Harry",subject:"Harry",status:"open",priority:2,due_text:timeText,due_precision:"instant",
+          temporal_kind:"local_datetime",offset_datetime:null,local_date:"2026-10-17",local_time:"21:20",timezone:null,relative_seconds:null},
+        sources:[{part_id:partId,evidence_text:text}]}]};
+    }),writer);
+    expect(await worker.tick()).toBe("deferred");
+    await pool.query("UPDATE reconciliation_jobs SET available_at=now() WHERE id=$1",[jobId]);
+    expect(await worker.tick()).toBe("applied");
+    expect(attempt).toBe(2);
+    const snapshot=await reader.getSnapshot({userId});
+    expect(snapshot.memories).toEqual([]);
+    expect(snapshot.commitments[0]).toMatchObject({title:"Meeting with Harry",subject:"Harry",dueAt:"2026-10-17T15:50:00.000Z"});
+  });
+
   test("a cross-user target cannot be changed by extraction", async () => {
     await firstJob("Ananya likes science fiction");
     await seedUser(pool, otherUserId);
