@@ -14,10 +14,13 @@ export const databaseTimestampSchema = z.union([z.date(), z.string()])
   .transform(value => value instanceof Date ? value.toISOString() : value)
   .pipe(timestampSchema);
 
+const timezoneAliases: Readonly<Record<string, string>> = { "Asia/Calcutta": "Asia/Kolkata" };
+export const canonicalTimezone = (value: string): string => timezoneAliases[value] ?? value;
+
 export const timezoneSchema = z.string().min(1).refine(value => {
   if (!/^(UTC|[A-Za-z][A-Za-z0-9._+-]*(?:\/[A-Za-z0-9._+-]+)+)$/.test(value)) return false;
   try { Temporal.Now.zonedDateTimeISO(value); return true; } catch { return false; }
-}, "Invalid IANA timezone");
+}, "Invalid IANA timezone").transform(canonicalTimezone);
 
 export const cursorSchema = z.string().max(2732).brand<"Cursor">();
 export type Cursor = z.infer<typeof cursorSchema>;

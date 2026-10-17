@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { commitmentSchema, counterSchema, jobClaimSchema, timestampSchema, uuidSchema } from "../../src/contracts";
+import { commitmentSchema, counterSchema, jobClaimSchema, timestampSchema, timezoneSchema, uuidSchema } from "../../src/contracts";
 import { OpenAITextExtractor, parseExtractionOutput, retryAfterSeconds, type ResponseRequest } from "../../src/reconciliation/extractor";
 import { resolveDue } from "../../src/reconciliation/time";
 import { validateProposals } from "../../src/reconciliation/validate";
@@ -105,6 +105,21 @@ describe("validation and due-time resolution", () => {
         temporal_kind:"local_datetime",offset_datetime:null,local_date:"2026-10-16",local_time:"09:00",timezone:null,relative_seconds:null},
       sources:[{part_id:partId,evidence_text:text}]};
     expect(validateProposals(input,[change]).changes[0]?.value).toMatchObject({title:"Call Ananya",dueAt:"2026-10-16T03:30:00.000Z"});
+  });
+  test("resolves tomorrow at 9 a.m. across equivalent browser and model timezone names", () => {
+    const text = "I need to send the presentation slides tomorrow at 9 a.m.";
+    const base = fixture(text, "2026-10-17T16:58:17.953Z");
+    const input: ClaimedExtraction = { ...base, sessionTimezone: "Asia/Calcutta" };
+    const change: ProposedChange = { entity: "commitment", action: "create", target_id: null, expected_version: null, memory: null,
+      commitment: { title: "Send presentation slides", subject: null, status: "open", priority: 2,
+        due_text: "tomorrow at 9 a.m.", due_precision: "unresolved", temporal_kind: "unresolved",
+        offset_datetime: null, local_date: null, local_time: null, timezone: "Asia/Kolkata", relative_seconds: null },
+      sources: [{ part_id: partId, evidence_text: text }],
+    };
+    expect(timezoneSchema.parse("Asia/Calcutta")).toBe("Asia/Kolkata");
+    expect(validateProposals(input, [change]).changes[0]?.value).toMatchObject({
+      dueAt: "2026-10-18T03:30:00.000Z", dueTimezone: "Asia/Kolkata", duePrecision: "instant",
+    });
   });
   test("derives a spoken local deadline when the model's calendar date and time hints disagree",()=>{
     const text="Remind me to call Ananya tomorrow at 9 a.m.";

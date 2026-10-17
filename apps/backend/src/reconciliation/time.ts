@@ -1,5 +1,5 @@
 import { Temporal } from "@js-temporal/polyfill";
-import { timestampSchema, timezoneSchema, type CommitmentValue } from "../contracts";
+import { canonicalTimezone, timestampSchema, timezoneSchema, type CommitmentValue } from "../contracts";
 import type { CompletedUserPart, ProposedCommitment } from "./types";
 
 type Due = Pick<CommitmentValue, "dueAt" | "dueTimezone" | "dueText" | "duePrecision">;
@@ -46,9 +46,10 @@ function timeInEvidence(text: string): string | null {
 }
 
 function zoneFor(proposal: ProposedCommitment, sessionTimezone: string): string | null {
-  const zone = proposal.timezone ?? sessionTimezone;
+  const sessionZone = canonicalTimezone(sessionTimezone);
+  const zone = canonicalTimezone(proposal.timezone ?? sessionZone);
   if (!timezoneSchema.safeParse(zone).success) return null;
-  if (proposal.timezone && proposal.timezone !== sessionTimezone && !proposal.due_text?.includes(proposal.timezone)) return null;
+  if (proposal.timezone && zone !== sessionZone && !proposal.due_text?.includes(proposal.timezone)) return null;
   return zone;
 }
 
