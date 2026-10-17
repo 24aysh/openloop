@@ -2,7 +2,8 @@ import { afterAll,beforeAll,beforeEach,describe,expect,test } from "bun:test";
 import express from "express";
 import type pg from "pg";
 import { errorResponse } from "../../src/http/error-response";
-import { NotificationFeed,parseEventCursor } from "../../src/notifications/feed";
+import { MindWriter } from "../../src/mind";
+import { NotificationFeed,parseEventCursor,parseEventIds } from "../../src/notifications/feed";
 import { createNotificationRouter } from "../../src/notifications/routes";
 import { CommitmentScheduler,CommitmentLogEmitter } from "../../src/scheduling";
 import { clearTestDatabase,createTestPool,prepareTestDatabase } from "../helpers/database";
@@ -19,11 +20,14 @@ describe("notification delivery feed",()=>{
     expect(parseEventCursor("12")).toBe("12");
     expect(()=>parseEventCursor("-1")).toThrow();
     expect(()=>parseEventCursor("9223372036854775808")).toThrow();
+    expect(parseEventIds("1,2")).toEqual(["1","2"]);
+    expect(()=>parseEventIds("1,1")).toThrow();
+    expect(()=>parseEventIds("1,2,3,4")).toThrow();
   });
   test("SSE resumes after Last-Event-ID and only sends later durable events",async()=>{
     await seedUser(pool);
     const past=new Date(Date.now()-60_000).toISOString();
-    await seedCommitment(pool,undefined,userId,past);
+    const first=await seedCommitment(pool,undefined,userId,past);
     await seedCommitment(pool,undefined,userId,past);
     await new CommitmentScheduler(pool).tick();
     await new CommitmentLogEmitter(pool,{emit:async()=>{}}).flush();
@@ -50,6 +54,11 @@ describe("notification delivery feed",()=>{
       }
       expect(body).toContain(`event: commitment_due`);
       expect(body).not.toContain(`id: ${events[0]!.id}\n`);
+      const activityUrl=`http://127.0.0.1:${address.port}/api/notifications/activity?ids=${events.map(event=>event.id).join(",")}`;
+      expect(await (await fetch(activityUrl)).json()).toEqual({activeEventIds:events.map(event=>event.id)});
+      await new MindWriter(pool).editCommitment({userId},first.id,{expectedVersion:first.version,status:"completed"});
+      const firstEvent=events.find(event=>event.commitmentId===first.id);if(!firstEvent)throw new Error("Missing first notification event");
+      expect(await (await fetch(activityUrl)).json()).toEqual({activeEventIds:events.filter(event=>event.id!==firstEvent.id).map(event=>event.id)});
       controller.abort();
       const resetController=new AbortController();
       const resetResponse=await fetch(`http://127.0.0.1:${address.port}/api/notifications/stream?after=999`,{signal:resetController.signal});

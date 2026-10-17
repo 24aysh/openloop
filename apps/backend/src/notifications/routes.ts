@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import type { UserScope } from "../contracts";
 import { logOperational, safeErrorCode } from "../operational-log";
-import { NotificationFeed, parseEventCursor } from "./feed";
+import { NotificationFeed, parseEventCursor, parseEventIds } from "./feed";
 
 export function createNotificationRouter(feed:NotificationFeed,scopeForRequest:(_request:Request)=>UserScope,activeStreams?:Set<()=>void>):Router {
   const router=Router();
@@ -11,6 +11,10 @@ export function createNotificationRouter(feed:NotificationFeed,scopeForRequest:(
   });
   router.get("/api/notifications/cursor",async(request,response)=>{
     response.json({latestEventId:await feed.latestId(scopeForRequest(request))});
+  });
+  router.get("/api/notifications/activity",async(request,response)=>{
+    const ids=parseEventIds(request.query.ids);
+    response.json({activeEventIds:await feed.activeIds(scopeForRequest(request),ids)});
   });
   router.get("/api/notifications/stream",async(request,response:Response)=>{
     let cursor=parseEventCursor(request.get("Last-Event-ID") ?? request.query.after);

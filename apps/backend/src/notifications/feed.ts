@@ -19,12 +19,31 @@ export function parseEventCursor(value:unknown):string {
   return value;
 }
 
+export function parseEventIds(value:unknown):readonly string[] {
+  if(typeof value!=="string")throw new DomainError("invalid_input","Notification event IDs are required");
+  const ids=value.split(",");
+  if(ids.length===0 || ids.length>3 || new Set(ids).size!==ids.length)
+    throw new DomainError("invalid_input","Invalid notification event IDs");
+  return ids.map(parseEventCursor);
+}
+
 export class NotificationFeed {
   constructor(private readonly pool:pg.Pool){}
 
   async latestId(scope:UserScope):Promise<string> {
     const result=await this.pool.query<{id:string}>("SELECT coalesce(max(id),0)::text AS id FROM notification_events WHERE user_id=$1",[scope.userId]);
     return result.rows[0]?.id??"0";
+  }
+
+  async activeIds(scope:UserScope,ids:readonly string[]):Promise<readonly string[]> {
+    if(ids.length===0)return [];
+    const result=await this.pool.query<{id:string}>(`SELECT e.id::text AS id
+      FROM notification_events e
+      JOIN commitment_logs l ON l.user_id=e.user_id AND l.id=e.commitment_log_id
+      JOIN commitments c ON c.user_id=l.user_id AND c.id=l.commitment_id
+      WHERE e.user_id=$1 AND e.id=ANY($2::bigint[]) AND c.status='open' AND c.schedule_version=l.schedule_version
+      ORDER BY e.id`,[scope.userId,ids.map(parseEventCursor)]);
+    return result.rows.map(row=>row.id);
   }
 
   async after(scope:UserScope,cursor:string):Promise<readonly NotificationEvent[]> {
