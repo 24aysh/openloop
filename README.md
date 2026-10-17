@@ -39,7 +39,21 @@ small implementation of a voice model (gpt-realtime-2.1 in my demo run) with whi
 
 ### architecture
 
+<img width="1510" height="734" alt="image" src="https://github.com/user-attachments/assets/07195d1d-87d5-4726-8293-d17effa2a40f" />
+
 ### demo run
+
+the below demo run shows that openloop correctly facts about user and also one commitment that he gave.
+
+https://github.com/user-attachments/assets/be50f18d-3aa2-4cac-8090-cee87de449e0
+
+below demo creates another commitment of a meeting with david. openloop was able to extract it.
+
+https://github.com/user-attachments/assets/bf6133e4-c508-4d43-8d4a-bf3c5d21f9de
+
+the final demo shows that openloop was able to set a reminder for the meeting with david.
+
+https://github.com/user-attachments/assets/0d6bcf80-817d-4138-a0f5-d9b39f2b0d60
 
 ### local run
 
