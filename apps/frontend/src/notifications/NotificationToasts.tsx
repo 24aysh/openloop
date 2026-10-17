@@ -42,9 +42,28 @@ export async function bootstrapNotificationCursor(storage:CursorStorage,request:
   rememberCursor(storage,latestEventId);
   return latestEventId;
 }
+export function parseNotificationActivity(raw:unknown,requestedIds:readonly string[]):ReadonlySet<string> {
+  if(typeof raw!=="object" || raw===null || Array.isArray(raw))throw new Error("Invalid notification activity");
+  const activeEventIds=(raw as Record<string,unknown>).activeEventIds;
+  if(!Array.isArray(activeEventIds))throw new Error("Invalid notification activity");
+  const requested=new Set(requestedIds);const active=new Set<string>();
+  for(const id of activeEventIds){
+    if(!validCursor(id) || !requested.has(id) || active.has(id))throw new Error("Invalid notification activity");
+    active.add(id);
+  }
+  return active;
+}
+export async function fetchNotificationActivity(ids:readonly string[],request:CursorRequest,signal?:AbortSignal):Promise<ReadonlySet<string>> {
+  if(ids.length===0)return new Set();
+  const query=new URLSearchParams({ids:ids.join(",")});
+  const response=await request(`/api/notifications/activity?${query}`,{signal});
+  if(!response.ok)throw new Error("Notification activity unavailable");
+  return parseNotificationActivity(await response.json() as unknown,ids);
+}
 function later(left:string,right:string):boolean {return BigInt(left)>BigInt(right);}
 
-export function NotificationToasts({onOpenCommitments,onDue}:{onOpenCommitments:()=>void;onDue:()=>void}){
+export function NotificationToasts({onOpenCommitments,onDue,inactiveCommitment}:{onOpenCommitments:()=>void;onDue:()=>void;
+  inactiveCommitment:Readonly<{id:string;revision:number}>|null}){
   const [toasts,setToasts]=useState<readonly (DueNotification & {expiresAt:number})[]>([]);
   const [connected,setConnected]=useState(true);
   useEffect(()=>{
@@ -79,6 +98,23 @@ export function NotificationToasts({onOpenCommitments,onDue}:{onOpenCommitments:
     return()=>{closed=true;if(retry!==null)clearTimeout(retry);stream?.close();};
   },[onDue]);
   useEffect(()=>{const timer=setInterval(()=>setToasts(old=>old.filter(item=>item.expiresAt>Date.now())),1000);return()=>clearInterval(timer);},[]);
+  const toastIds=toasts.map(item=>item.id).join(",");
+  useEffect(()=>{
+    if(toastIds==="")return;
+    const ids=toastIds.split(",");const controller=new AbortController();
+    const check=async()=>{
+      try{
+        const active=await fetchNotificationActivity(ids,fetch,controller.signal);if(controller.signal.aborted)return;
+        if(active.size<ids.length){
+          setToasts(old=>old.filter(item=>!ids.includes(item.id)||active.has(item.id)));
+          onDue();
+        }
+      }catch{/* the SSE connection remains responsible for connection status */}
+    };
+    void check();const timer=setInterval(()=>{void check();},1000);
+    return()=>{clearInterval(timer);controller.abort();};
+  },[toastIds,onDue]);
+  useEffect(()=>{if(inactiveCommitment!==null)setToasts(old=>old.filter(item=>item.commitmentId!==inactiveCommitment.id));},[inactiveCommitment]);
   return <aside className="notification-area" aria-label="Reminders" aria-live="polite">
     {!connected?<p className="notification-connection"><span className="loading-dot"/>Live reminders reconnecting…</p>:null}
     {toasts.map(item=><div className="notification-toast" key={item.id} role="status">

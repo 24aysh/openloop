@@ -9,7 +9,9 @@ import "./style.css";
 function App(){
   const [view,setView]=useState<"voice"|"mind"|"commitments">("voice");
   const [notificationRevision,setNotificationRevision]=useState(0);
+  const [inactiveCommitment,setInactiveCommitment]=useState<Readonly<{id:string;revision:number}>|null>(null);
   const onDue=useCallback(()=>setNotificationRevision(value=>value+1),[]);
+  const onCommitmentInactive=useCallback((id:string)=>setInactiveCommitment(value=>({id,revision:(value?.revision??0)+1})),[]);
   return <div className="app-shell">
     <header className="app-header">
       <h1>openloop</h1>
@@ -21,9 +23,9 @@ function App(){
     </nav>
     <main className="app-content">
       <div hidden={view!=="voice"}><VoiceConversation/></div>
-      {view==="mind"?<MindView/>:null}{view==="commitments"?<CommitmentsView notificationRevision={notificationRevision}/>:null}
+      {view==="mind"?<MindView/>:null}{view==="commitments"?<CommitmentsView notificationRevision={notificationRevision} onCommitmentInactive={onCommitmentInactive}/>:null}
     </main>
-    <NotificationToasts onOpenCommitments={()=>setView("commitments")} onDue={onDue}/>
+    <NotificationToasts onOpenCommitments={()=>setView("commitments")} onDue={onDue} inactiveCommitment={inactiveCommitment}/>
   </div>;
 }
 

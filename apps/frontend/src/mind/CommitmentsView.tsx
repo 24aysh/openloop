@@ -15,7 +15,7 @@ function logged(item:Commitment):string|null{
   catch{return item.loggedAt;}
 }
 type VisibleStatus="all"|Exclude<Commitment["status"],"deleted">;
-export function CommitmentsView({notificationRevision=0}:{notificationRevision?:number}){
+export function CommitmentsView({notificationRevision=0,onCommitmentInactive}:{notificationRevision?:number;onCommitmentInactive:(id:string)=>void}){
   const [status,setStatus]=useState<VisibleStatus>("all");const [revision,setRevision]=useState(0);
   const [items,setItems]=useState<readonly Commitment[]>([]);const [cursor,setCursor]=useState<string|null>(null);
   const [loading,setLoading]=useState(true);const [moreLoading,setMoreLoading]=useState(false);const [error,setError]=useState<string|null>(null);
@@ -38,13 +38,13 @@ export function CommitmentsView({notificationRevision=0}:{notificationRevision?:
     finally{if(!controller.signal.aborted)setMoreLoading(false);}
   }
   async function update(item:Commitment,next:Exclude<Commitment["status"],"deleted">){if(busy)return;const controller=new AbortController();action.current=controller;setBusy(true);setActionError(null);
-    try{await api.setCommitmentStatus(item,next,controller.signal);if(!controller.signal.aborted)setRevision(value=>value+1);}
+    try{const updated=await api.setCommitmentStatus(item,next,controller.signal);if(!controller.signal.aborted){if(updated.status!=="open")onCommitmentInactive(updated.id);setRevision(value=>value+1);}}
     catch(reason){if(!controller.signal.aborted){if(reason instanceof ApiError&&reason.code==="version_conflict")setRevision(value=>value+1);
       setActionError(reason instanceof Error?reason.message:"request_failed");}}
     finally{if(!controller.signal.aborted)setBusy(false);}
   }
   async function remove(item:Commitment){if(busy)return;const controller=new AbortController();action.current=controller;setBusy(true);setActionError(null);
-    try{await api.deleteCommitment(item,controller.signal);if(!controller.signal.aborted){setItems(old=>old.filter(value=>value.id!==item.id));setConfirming(null);setRevision(value=>value+1);}}
+    try{const deleted=await api.deleteCommitment(item,controller.signal);if(!controller.signal.aborted){onCommitmentInactive(deleted.id);setItems(old=>old.filter(value=>value.id!==item.id));setConfirming(null);setRevision(value=>value+1);}}
     catch(reason){if(!controller.signal.aborted){if(reason instanceof ApiError&&reason.code==="version_conflict")setRevision(value=>value+1);
       setActionError(reason instanceof Error?reason.message:"request_failed");}}
     finally{if(!controller.signal.aborted)setBusy(false);}
