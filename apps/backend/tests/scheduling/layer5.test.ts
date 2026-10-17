@@ -201,7 +201,7 @@ describe("durable scheduling decision", () => {
 });
 
 describe("ordered terminal emission", () => {
-  test("failed output waits, retains order, and emits privacy-safe events on retry", async () => {
+  test("failed terminal output cannot block durable notifications or later commitments", async () => {
     await seedUser(pool);
     const due = new Date((await databaseTime()).getTime() - 60_000);
     await createCommitment({ priority: 1, dueAt: due, title: "Private first task" });
@@ -211,22 +211,17 @@ describe("ordered terminal emission", () => {
     let fail = true;
     const sink: TerminalSink = { emit: async event => { if (fail) { fail = false; throw new Error("private failure text"); } events.push(event); } };
     const emitter = new CommitmentLogEmitter(pool, sink);
-    expect(await emitter.flush()).toEqual({ emitted: 0, remaining: 2 });
-    let rows = await readLogs();
-    expect(rows[0]?.emit_attempts).toBe(1);
-    expect(rows[0]?.last_error_code).toBe("terminal_write_failed");
-    expect(Number((await pool.query<{ seconds: string }>("SELECT extract(epoch FROM emit_available_at-clock_timestamp())::text AS seconds FROM commitment_logs WHERE id=$1", [rows[0]?.id])).rows[0]?.seconds)).toBeGreaterThan(4);
-    expect(await emitter.flush()).toEqual({ emitted: 0, remaining: 2 });
-    await pool.query("UPDATE commitment_logs SET emit_available_at=clock_timestamp()-interval '1 second' WHERE id=$1", [rows[0]?.id]);
     expect(await emitter.flush()).toEqual({ emitted: 2, remaining: 0 });
-    rows = await readLogs();
-    expect(events.map(event => event.logId)).toEqual(rows.map(row => uuidSchema.parse(row.id)));
+    const rows = await readLogs();
+    expect(events.map(event => event.logId)).toEqual([uuidSchema.parse(rows[1]!.id)]);
     expect(events.every(event => event.lateByMs >= 0 && !JSON.stringify(event).includes("Private"))).toBe(true);
     expect(rows.every(row => row.emitted_at !== null)).toBe(true);
+    expect(rows.every(row => row.emit_attempts===0 && row.last_error_code===null)).toBe(true);
+    expect(await new NotificationFeed(pool).after({userId},"0")).toHaveLength(2);
     expect(await emitter.flush()).toEqual({ emitted: 0, remaining: 0 });
   });
 
-  test("an uncertain write can repeat only the same durable log ID", async () => {
+  test("an uncertain terminal write cannot duplicate the durable event", async () => {
     await seedUser(pool);
     await createCommitment({ dueAt: new Date((await databaseTime()).getTime() - 60_000) });
     await scheduler.tick();
@@ -236,12 +231,12 @@ describe("ordered terminal emission", () => {
       seen.push(event.logId);
       if (uncertain) { uncertain = false; throw new Error("acknowledgment lost after output"); }
     } });
-    await emitter.flush();
+    expect(await emitter.flush()).toEqual({emitted:1,remaining:0});
     const rows = await readLogs();
     expect(rows).toHaveLength(1);
-    await pool.query("UPDATE commitment_logs SET emit_available_at=clock_timestamp()-interval '1 second' WHERE id=$1", [rows[0]?.id]);
-    expect(await emitter.flush()).toEqual({ emitted: 1, remaining: 0 });
-    expect(seen).toEqual([uuidSchema.parse(rows[0]?.id), uuidSchema.parse(rows[0]?.id)]);
+    expect(await emitter.flush()).toEqual({ emitted: 0, remaining: 0 });
+    expect(seen).toEqual([uuidSchema.parse(rows[0]!.id)]);
+    expect(await new NotificationFeed(pool).after({userId},"0")).toHaveLength(1);
     expect(await readLogs()).toHaveLength(1);
   });
 
@@ -269,22 +264,17 @@ describe("ordered terminal emission", () => {
     expect((await feed.after({userId},"0"))[0]?.active).toBe(false);
   });
 
-  test("repeated sink failures back off at five through sixty seconds", async () => {
+  test("repeated terminal failures leave all durable notification events available", async () => {
     await seedUser(pool);
-    await createCommitment({ dueAt: new Date((await databaseTime()).getTime() - 60_000) });
+    const due=new Date((await databaseTime()).getTime()-60_000);
+    await createCommitment({dueAt:due,priority:1});
+    await createCommitment({dueAt:due,priority:2});
+    await createCommitment({dueAt:due,priority:3});
     await scheduler.tick();
     const emitter = new CommitmentLogEmitter(pool, { emit: async () => { throw new Error("private output failure"); } });
-    for (const [index, delay] of [5, 10, 20, 40, 60, 60].entries()) {
-      if (index > 0) await pool.query("UPDATE commitment_logs SET emit_available_at=clock_timestamp()-interval '1 second'");
-      expect((await emitter.flush()).emitted).toBe(0);
-      const result = await pool.query<{ attempts: number; seconds: string; code: string }>(`
-        SELECT emit_attempts AS attempts,extract(epoch FROM emit_available_at-clock_timestamp())::text AS seconds,
-          last_error_code AS code FROM commitment_logs`);
-      expect(result.rows[0]?.attempts).toBe(index + 1);
-      expect(Number(result.rows[0]?.seconds)).toBeGreaterThan(delay - 1);
-      expect(Number(result.rows[0]?.seconds)).toBeLessThanOrEqual(delay);
-      expect(result.rows[0]?.code).toBe("terminal_write_failed");
-    }
+    expect(await emitter.flush()).toEqual({emitted:3,remaining:0});
+    expect((await readLogs()).every(row=>row.emitted_at!==null && row.emit_attempts===0 && row.last_error_code===null)).toBe(true);
+    expect(await new NotificationFeed(pool).after({userId},"0")).toHaveLength(3);
   });
 
   test("two emitters serialize on the advisory session lock", async () => {

@@ -1,7 +1,7 @@
 import { DomainError } from "./contracts/errors";
 
 type LogValue = string | number | boolean | null;
-type Component = "backend" | "http" | "session" | "transcript" | "reconciliation";
+type Component = "backend" | "http" | "session" | "transcript" | "reconciliation" | "scheduling";
 
 export function logOperational(component: Component, event: string, fields: Readonly<Record<string, LogValue>> = {}): void {
   process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), component, event, ...fields })}\n`);

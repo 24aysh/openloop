@@ -1,6 +1,7 @@
 import type pg from "pg";
 import { databaseTimestampSchema, prioritySchema, uuidSchema, versionSchema, type Timestamp, type UUID } from "../contracts";
 import { lockMindState } from "../mind/writer";
+import { logOperational, safeErrorCode } from "../operational-log";
 
 type LogRow = {
   id: string;
@@ -54,13 +55,14 @@ function terminalEvent(row: LogRow, at: Date): TerminalEvent {
   };
 }
 
-async function emitOne(client: pg.PoolClient, row: LogRow, sink:TerminalSink, at:Date): Promise<"emitted"|"failed"|"canceled"> {
+async function emitOne(client: pg.PoolClient, row: LogRow, sink:TerminalSink, at:Date): Promise<"emitted"|"canceled"> {
+  let event:TerminalEvent|null=null;
   await client.query("BEGIN");
   try {
     await client.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
     await lockMindState(client, uuidSchema.parse(row.user_id));
-    const current = await client.query<{ emitted_at: Date | null; canceled_at: Date | null; emit_attempts: number; status:string; current_schedule_version:string }>(
-      `SELECT l.emitted_at,l.canceled_at,l.emit_attempts,c.status,c.schedule_version AS current_schedule_version
+    const current = await client.query<{ emitted_at: Date | null; canceled_at: Date | null; status:string; current_schedule_version:string }>(
+      `SELECT l.emitted_at,l.canceled_at,c.status,c.schedule_version AS current_schedule_version
         FROM commitment_logs l JOIN commitments c ON c.user_id=l.user_id AND c.id=l.commitment_id
         WHERE l.user_id=$1 AND l.id=$2 FOR UPDATE OF l,c`,
       [row.user_id, row.id],
@@ -71,25 +73,18 @@ async function emitOne(client: pg.PoolClient, row: LogRow, sink:TerminalSink, at
       await client.query("UPDATE commitment_logs SET canceled_at=clock_timestamp() WHERE user_id=$1 AND id=$2",[row.user_id,row.id]);
       await client.query("COMMIT");return "canceled";
     }
-    let success=false;
-    try{await sink.emit(terminalEvent(row,at));success=true;}
-    catch{/* the durable row records this attempt without private exception text */}
-    if (success) {
-      await client.query("UPDATE commitment_logs SET emitted_at=clock_timestamp(),last_error_code=NULL WHERE user_id=$1 AND id=$2", [row.user_id, row.id]);
-      await client.query("INSERT INTO notification_events(user_id,commitment_log_id) VALUES($1,$2) ON CONFLICT (commitment_log_id) DO NOTHING",[row.user_id,row.id]);
-    } else {
-      const attempts = found.emit_attempts + 1;
-      const delay = Math.min(60, 5 * 2 ** Math.min(attempts - 1, 4));
-      await client.query(`UPDATE commitment_logs SET emit_attempts=$3,last_error_code='terminal_write_failed',
-        emit_available_at=clock_timestamp()+($4::integer * interval '1 second') WHERE user_id=$1 AND id=$2`,
-      [row.user_id, row.id, attempts, delay]);
-    }
+    event=terminalEvent(row,at);
+    await client.query("UPDATE commitment_logs SET emitted_at=clock_timestamp(),last_error_code=NULL WHERE user_id=$1 AND id=$2", [row.user_id, row.id]);
+    await client.query("INSERT INTO notification_events(user_id,commitment_log_id) VALUES($1,$2) ON CONFLICT (commitment_log_id) DO NOTHING",[row.user_id,row.id]);
     await client.query("COMMIT");
-    return success?"emitted":"failed";
   } catch (error) {
     try { await client.query("ROLLBACK"); } catch { /* preserve the original failure */ }
     throw error;
   }
+  if(event===null)throw new Error("Durable commitment event was not created");
+  try{await sink.emit(event);}
+  catch(error){logOperational("scheduling","terminal_write_failed",{logId:event.logId,code:safeErrorCode(error)});}
+  return "emitted";
 }
 
 export class CommitmentLogEmitter {
@@ -116,7 +111,6 @@ export class CommitmentLogEmitter {
           if (!(attemptedAt instanceof Date)) throw new Error("Database clock unavailable");
           if (row.emit_available_at > attemptedAt) break;
           const outcome=await emitOne(client,row,this.sink,attemptedAt);
-          if(outcome==="failed")break;
           if(outcome==="emitted")emitted++;
         }
       }
