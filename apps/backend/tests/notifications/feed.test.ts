@@ -34,6 +34,9 @@ describe("notification delivery feed",()=>{
     const server=app.listen(0,"127.0.0.1");
     try{
       const address=server.address();if(!address || typeof address==="string")throw new Error("Missing test server port");
+      const cursorResponse=await fetch(`http://127.0.0.1:${address.port}/api/notifications/cursor`);
+      expect(cursorResponse.status).toBe(200);
+      expect(await cursorResponse.json()).toEqual({latestEventId:events[1]!.id});
       const controller=new AbortController();
       const response=await fetch(`http://127.0.0.1:${address.port}/api/notifications/stream?after=0`,{
         headers:{"Last-Event-ID":events[0]!.id},signal:controller.signal,
@@ -52,10 +55,13 @@ describe("notification delivery feed",()=>{
       const resetResponse=await fetch(`http://127.0.0.1:${address.port}/api/notifications/stream?after=999`,{signal:resetController.signal});
       const resetReader=resetResponse.body?.getReader();if(!resetReader)throw new Error("Missing reset body");
       let resetBody="";
-      while(!resetBody.includes(`id: ${events[0]!.id}\n`)){
+      while(!resetBody.includes(`data: ${JSON.stringify({latestEventId:events[1]!.id})}\n`)){
         const chunk=await resetReader.read();if(chunk.done)throw new Error("Reset stream ended early");resetBody+=new TextDecoder().decode(chunk.value);
       }
       expect(resetBody).toContain("event: notification_reset");
+      expect(resetBody).toContain(`id: ${events[1]!.id}\n`);
+      expect(resetBody).toContain(`data: ${JSON.stringify({latestEventId:events[1]!.id})}`);
+      expect(resetBody).not.toContain(`id: ${events[0]!.id}\n`);
       resetController.abort();
       for(const close of streams)close();
       expect(streams.size).toBe(0);

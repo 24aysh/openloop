@@ -9,6 +9,9 @@ export function createNotificationRouter(feed:NotificationFeed,scopeForRequest:(
     const cursor=parseEventCursor(request.query.after);
     response.json({items:await feed.after(scopeForRequest(request),cursor)});
   });
+  router.get("/api/notifications/cursor",async(request,response)=>{
+    response.json({latestEventId:await feed.latestId(scopeForRequest(request))});
+  });
   router.get("/api/notifications/stream",async(request,response:Response)=>{
     let cursor=parseEventCursor(request.get("Last-Event-ID") ?? request.query.after);
     const scope=scopeForRequest(request);
@@ -36,8 +39,8 @@ export function createNotificationRouter(feed:NotificationFeed,scopeForRequest:(
         if(!checked){
           const latest=await feed.latestId(scope);
           if(BigInt(cursor)>BigInt(latest)){
-            cursor="0";
-            response.write("event: notification_reset\ndata: {}\n\n");
+            cursor=latest;
+            response.write(`id: ${latest}\nevent: notification_reset\ndata: ${JSON.stringify({latestEventId:latest})}\n\n`);
           }
           checked=true;
         }
