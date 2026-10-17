@@ -121,6 +121,19 @@ describe("validation and due-time resolution", () => {
       dueAt: "2026-10-18T03:30:00.000Z", dueTimezone: "Asia/Kolkata", duePrecision: "instant",
     });
   });
+  test("resolves an explicit meridiem time when transcription omits the preposition", () => {
+    const text = "I have an appointment with Ananya tomorrow 9 a.m.";
+    const input = fixture(text, "2026-10-17T17:03:17.880Z");
+    const change: ProposedChange = { entity: "commitment", action: "create", target_id: null, expected_version: null, memory: null,
+      commitment: { title: "Appointment with Ananya", subject: "Ananya", status: "open", priority: 2,
+        due_text: "tomorrow 9 a.m.", due_precision: "unresolved", temporal_kind: "unresolved",
+        offset_datetime: null, local_date: null, local_time: null, timezone: null, relative_seconds: null },
+      sources: [{ part_id: partId, evidence_text: text }],
+    };
+    expect(validateProposals(input, [change]).changes[0]?.value).toMatchObject({
+      dueAt: "2026-10-18T03:30:00.000Z", dueTimezone: "Asia/Kolkata", duePrecision: "instant",
+    });
+  });
   test("derives a spoken local deadline when the model's calendar date and time hints disagree",()=>{
     const text="Remind me to call Ananya tomorrow at 9 a.m.";
     const input=fixture(text,"2026-10-16T21:30:00.000Z");

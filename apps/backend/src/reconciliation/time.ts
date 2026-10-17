@@ -36,7 +36,7 @@ function dateInEvidence(text: string, zone: string, anchor: string | null): stri
 function timeInEvidence(text: string): string | null {
   const iso = text.match(/\b\d{4}-\d{2}-\d{2}[T ](\d{2}):(\d{2})\b/);
   if (iso) return `${iso[1]}:${iso[2]}`;
-  const spoken = text.match(/\b(?:at|by|before)\s+(\d{1,2})(?:(?::|\.)(\d{2}))?\s*(a\.?\s*m\.?|p\.?\s*m\.?)(?![a-z])/i);
+  const spoken = text.match(/\b(?:(?:at|by|before)\s+)?(\d{1,2})(?:(?::|\.)(\d{2}))?\s*(a\.?\s*m\.?|p\.?\s*m\.?)(?![a-z])/i);
   if (!spoken) return null;
   const rawHour = Number(spoken[1]);
   const minute = Number(spoken[2] ?? "0");
